@@ -389,14 +389,25 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
       const parsed = JSON.parse(rawOutput);
       quizQuestions = Array.isArray(parsed) ? parsed : (parsed.questions || Object.values(parsed)[0] || []);
       
-      quizQuestions = quizQuestions.slice(0, numQ).map((q, i) => ({
-        id: q.id || `q-${i}`,
-        question: q.question || 'Missing question?',
-        options: Array.isArray(q.options) && q.options.length > 0 ? q.options : ['A', 'B', 'C', 'D'],
-        correct_answer: q.correct_answer || (q.options ? q.options[q.correctIndex || 0] : 'A'),
-        correctIndex: q.correctIndex !== undefined ? q.correctIndex : 0,
-        explanation: q.explanation || 'No explanation provided.'
-      }));
+      quizQuestions = quizQuestions.slice(0, numQ).map((q, i) => {
+        const rawOptions = Array.isArray(q.options) && q.options.length > 0 ? q.options.slice() : ['A', 'B', 'C', 'D'];
+        const rawIndex = Number.isInteger(q.correctIndex) ? q.correctIndex : 0;
+        const correctValue = rawOptions[rawIndex] !== undefined ? rawOptions[rawIndex] : (q.correct_answer || rawOptions[0]);
+        // Shuffle to counter LLM positional bias (model skews correct answer toward option B).
+        for (let j = rawOptions.length - 1; j > 0; j--) {
+          const k = crypto.randomInt(0, j + 1);
+          [rawOptions[j], rawOptions[k]] = [rawOptions[k], rawOptions[j]];
+        }
+        const newIndex = Math.max(0, rawOptions.indexOf(correctValue));
+        return {
+          id: q.id || `q-${i}`,
+          question: q.question || 'Missing question?',
+          options: rawOptions,
+          correct_answer: rawOptions[newIndex],
+          correctIndex: newIndex,
+          explanation: q.explanation || 'No explanation provided.'
+        };
+      });
     } catch (parseErr) {
       console.error('Failed to parse Groq quiz output:', parseErr);
       throw new Error('Failed to generate valid quiz format');
