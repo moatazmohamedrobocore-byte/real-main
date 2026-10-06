@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 import path from 'node:path';
@@ -27,11 +29,85 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors({ origin: true, credentials: true }));
+// Trust the proxy so rate-limit and req.ip see the real client address behind Railway/Vercel.
+app.set('trust proxy', 1);
+
+// helmet with a CSP relaxed just enough for the compiled SPA (inline styles + same-origin scripts/images).
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        'default-src': ["'self'"],
+        'script-src': ["'self'"],
+        'style-src': ["'self'", "'unsafe-inline'"],
+        'img-src': ["'self'", 'data:', 'blob:', 'https:'],
+        'font-src': ["'self'", 'data:'],
+        'connect-src': ["'self'", 'https:'],
+        'frame-ancestors': ["'none'"],
+        'object-src': ["'none'"]
+      }
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-site' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+  })
+);
+
+// CORS allowlist from env (comma-separated). Falls back to reflect origin if empty, for local dev.
+const corsAllowlist = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // same-origin / curl
+      if (corsAllowlist.length === 0) return cb(null, true); // dev
+      if (corsAllowlist.includes(origin)) return cb(null, true);
+      return cb(new Error('CORS: origin not allowed'));
+    },
+    credentials: true
+  })
+);
+
 app.use(morgan('dev'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Rate limiters. Keyed on IP + email (when present) so one attacker can't spray many accounts.
+const authKey = (req) => `${req.ip}:${(req.body?.email || '').toLowerCase()}`;
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: authKey,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in 15 minutes.' } }
+});
+const forgotLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: authKey,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many reset requests. Try again later.' } }
+});
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'AI endpoints are busy. Please slow down.' } }
+});
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+app.use(generalLimiter);
+
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Health checks
@@ -46,6 +122,10 @@ app.get('/health', async (_req, res) => {
 
 // Helper to mount routers at a prefix
 function mountRouters(prefix = '') {
+  app.use(`${prefix}/auth/login`, authLimiter);
+  app.use(`${prefix}/auth/register`, authLimiter);
+  app.use(`${prefix}/auth/forgot-password`, forgotLimiter);
+  app.use(`${prefix}/auth/reset-password`, forgotLimiter);
   app.use(`${prefix}/auth`, authRoutes);
   app.use(`${prefix}/courses`, courseRoutes);
   app.use(prefix, assessmentRoutes);
@@ -53,6 +133,7 @@ function mountRouters(prefix = '') {
   app.use(prefix, eventRoutes);
   app.use(`${prefix}/users`, userRoutes);
   app.use(prefix, adminRoutes);
+  app.use(`${prefix}/ai`, aiLimiter);
   app.use(prefix, dataRoutes);
   app.use(prefix, notificationRoutes);
 }
@@ -63,11 +144,11 @@ mountRouters('/api');
 startCalendarReminderScheduler();
 
 // Direct /login and /register shortcuts if frontend hits them directly
-app.post('/login', (req, res, next) => {
+app.post('/login', authLimiter, (req, res, next) => {
   req.url = '/login';
   authRoutes(req, res, next);
 });
-app.post('/register', (req, res, next) => {
+app.post('/register', authLimiter, (req, res, next) => {
   req.url = '/register';
   authRoutes(req, res, next);
 });

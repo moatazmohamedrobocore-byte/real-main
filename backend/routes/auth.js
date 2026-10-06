@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import { query } from '../db/pool.js';
 import { authenticate } from '../middleware/auth.js';
+import { validateEmail, validateName, validatePassword, send400 } from '../middleware/validate.js';
 
 const router = Router();
 
@@ -59,9 +60,12 @@ function issueTokens(user, familyId = null) {
 router.post('/register', async (req, res, next) => {
   try {
     const { name, email, password } = req.body || {};
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Name, email, and password are required.' } });
-    }
+    const nameErr = validateName(name);
+    if (nameErr) return send400(res, nameErr);
+    const emailErr = validateEmail(email);
+    if (emailErr) return send400(res, emailErr);
+    const pwErr = validatePassword(password);
+    if (pwErr) return send400(res, pwErr);
 
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedName = name.trim();
@@ -118,8 +122,11 @@ router.post('/register', async (req, res, next) => {
 router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
-    if (!email || !password) {
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Email and password are required.' } });
+    }
+    if (email.length > 254 || password.length > 128) {
+      return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Invalid credentials payload.' } });
     }
 
     const trimmedEmail = email.trim().toLowerCase();
@@ -248,55 +255,61 @@ router.post('/refresh', async (req, res, next) => {
 
 // POST /forgot-password
 router.post('/forgot-password', async (req, res, next) => {
+  const genericOk = { message: 'If an account exists for that email, an OTP has been sent.' };
   try {
     const { email } = req.body || {};
-    if (!email) {
+    if (!email || typeof email !== 'string') {
       return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Email is required.' } });
     }
 
     const trimmedEmail = email.trim().toLowerCase();
     const result = await query('SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL', [trimmedEmail]);
 
+    // Avoid user enumeration: always return the same shape.
     if (result.rows.length === 0) {
-      return res.status(400).json({ error: { code: 'WRONG_EMAIL', message: 'The email is incorrect.' } });
+      return res.status(200).json(genericOk);
     }
 
     const user = result.rows[0];
 
-    // Generate a 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Cryptographic 6-digit OTP (crypto.randomInt is uniform; Math.random isn't).
+    const otp = crypto.randomInt(0, 1000000).toString().padStart(6, '0');
     const otpHash = await bcrypt.hash(otp, 10);
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
+    // Invalidate any outstanding resets for this user so only the newest OTP is live.
+    await query('UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL', [user.id]);
     await query(
       `INSERT INTO password_resets (user_id, otp_hash, expires_at)
        VALUES ($1, $2, $3)`,
       [user.id, otpHash, expiresAt]
     );
 
-    // Send email using Gmail
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+        });
+        await transporter.sendMail({
+          from: process.env.EMAIL_USER,
+          to: trimmedEmail,
+          subject: 'Password Reset OTP',
+          text: `Your OTP for password reset is: ${otp}. It expires in 15 minutes.`
+        });
+        console.log(`[Email Sent] OTP for ${trimmedEmail} was sent successfully.`);
+      } catch (mailErr) {
+        console.error('Email send failed (OTP still stored):', mailErr.message);
       }
-    });
+    } else {
+      console.warn('EMAIL_USER/EMAIL_PASS not configured; OTP generated but not emailed.');
+    }
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: trimmedEmail,
-      subject: 'Password Reset OTP',
-      text: `Your OTP for password reset is: ${otp}. It expires in 15 minutes.\n\nYou can reset your password here: http://localhost:3001/reset-password.html?email=${encodeURIComponent(trimmedEmail)}`
-    };
-
-    await transporter.sendMail(mailOptions);
-    console.log(`[Email Sent] OTP for ${trimmedEmail} was sent successfully.`);
-
-    res.status(200).json({ message: 'OTP sent to your email.' });
+    res.status(200).json(genericOk);
   } catch (err) {
-    console.error('Error sending email:', err);
-    res.status(500).json({ error: { code: 'EMAIL_SEND_FAILED', message: 'Failed to send OTP email.' } });
+    console.error('Error in /forgot-password:', err);
+    // Still a generic response to avoid oracle behaviour on errors.
+    res.status(200).json(genericOk);
   }
 });
 
@@ -306,6 +319,17 @@ router.post('/reset-password', async (req, res, next) => {
     const { email, otp, newPassword } = req.body || {};
     if (!email || !otp || !newPassword) {
       return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Email, OTP, and new password are required.' } });
+    }
+    const emailErr = validateEmail(email);
+    if (emailErr) return send400(res, emailErr);
+    const pwErr = validatePassword(newPassword);
+    if (pwErr) return send400(res, pwErr);
+    if (typeof otp !== 'string' && typeof otp !== 'number') {
+      return send400(res, { code: 'INVALID_OTP', message: 'Invalid OTP.' });
+    }
+    const otpStr = String(otp);
+    if (!/^\d{4,8}$/.test(otpStr)) {
+      return send400(res, { code: 'INVALID_OTP', message: 'Invalid OTP.' });
     }
 
     const trimmedEmail = email.trim().toLowerCase();
@@ -329,7 +353,7 @@ router.post('/reset-password', async (req, res, next) => {
     }
 
     const resetRow = resetResult.rows[0];
-    const isMatch = await bcrypt.compare(otp.toString(), resetRow.otp_hash);
+    const isMatch = await bcrypt.compare(otpStr, resetRow.otp_hash);
 
     if (!isMatch) {
       return res.status(400).json({ error: { code: 'INVALID_OTP', message: 'Invalid or expired OTP.' } });
