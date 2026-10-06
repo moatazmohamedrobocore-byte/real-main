@@ -3,6 +3,7 @@
   "private": true,
   "description": "REAL.i — AI-powered learning management platform (Express + PostgreSQL).",
   "scripts": {
+    "postinstall": "npm --prefix backend install --omit=dev",
     "install:backend": "npm --prefix backend install",
     "setup": "npm run install:backend && npm --prefix backend run setup-pg && npm --prefix backend run migrate && npm --prefix backend run seed",
     "start": "npm --prefix backend start",
