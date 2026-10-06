@@ -109,7 +109,6 @@ CREATE TABLE IF NOT EXISTS assessments (
 CREATE INDEX IF NOT EXISTS idx_assessments_course ON assessments(course_id, status);
 ALTER TABLE assessments ALTER COLUMN course_id DROP NOT NULL;
 ALTER TABLE assessments ADD COLUMN IF NOT EXISTS type VARCHAR(20) NOT NULL DEFAULT 'quiz';
-ALTER TABLE submissions ALTER COLUMN course_id DROP NOT NULL;
 
 -- Submissions Table
 CREATE TABLE IF NOT EXISTS submissions (
@@ -142,6 +141,7 @@ CREATE TABLE IF NOT EXISTS submissions (
 );
 CREATE INDEX IF NOT EXISTS idx_submission_course ON submissions(course_id, kind, grading_status);
 CREATE INDEX IF NOT EXISTS idx_submission_student ON submissions(student_id, course_id);
+ALTER TABLE submissions ALTER COLUMN course_id DROP NOT NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS grading_comments TEXT DEFAULT NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS grading_suggestions TEXT DEFAULT NULL;
 
