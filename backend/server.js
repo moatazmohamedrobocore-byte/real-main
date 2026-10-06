@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
@@ -71,6 +72,7 @@ app.use(
   })
 );
 
+app.use(compression());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
@@ -157,7 +159,18 @@ app.post('/register', authLimiter, (req, res, next) => {
 const webRoot = path.resolve(__dirname, '../apps/web');
 if (fs.existsSync(path.join(webRoot, 'index.html'))) {
   console.log(`Serving frontend static build from ${webRoot}`);
-  app.use(express.static(webRoot));
+  // Hashed assets (e.g. index-BOtlBGmE.js) — cache for 1 year since the hash changes on rebuild
+  app.use('/assets', express.static(path.join(webRoot, 'assets'), { maxAge: '365d', immutable: true }));
+  // Fonts — also long-cache
+  app.use('/fonts', express.static(path.join(webRoot, 'fonts'), { maxAge: '365d', immutable: true }));
+  // Everything else (index.html, favicon, logo) — no-cache so updates are picked up immediately
+  app.use(express.static(webRoot, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    }
+  }));
 
   // Client-side SPA routing fallback
   app.get(/^(?!\/v1\/|\/api\/|\/health).*/, (req, res, next) => {
