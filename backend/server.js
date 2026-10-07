@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -80,17 +79,45 @@ if (!isProduction && corsAllowlist.length === 0) {
   console.warn('[CORS] CORS_ORIGIN unset — running in permissive dev mode. Do NOT deploy without setting it.');
 }
 console.log(`[CORS] mode=${corsAllowlist.length === 0 ? 'permissive (dev)' : 'allowlist'} origins=${corsAllowlist.length ? corsAllowlist.join(',') : '(any)'} NODE_ENV=${process.env.NODE_ENV || '(unset)'}`);
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // same-origin / curl / health probes
-      if (corsAllowlist.length === 0) return cb(null, true); // dev only; prod exits above
-      if (corsAllowlist.includes(origin)) return cb(null, true);
-      return cb(new Error('CORS: origin not allowed'));
-    },
-    credentials: true
-  })
-);
+
+// The SPA is served same-origin by this process, so same-origin requests must
+// always pass even when they aren't in CORS_ORIGIN. The `cors` package's origin
+// callback never sees `req`, so we implement CORS directly to distinguish
+// same-origin from cross-origin and to control middleware ordering.
+function hostOf(value) {
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
+}
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  // No Origin header → same-origin navigation, curl, health probes: allow.
+  if (!origin) return next();
+
+  const sameOrigin = hostOf(origin) === hostOf(`${req.protocol}://${req.headers.host}`);
+  const allowed =
+    sameOrigin ||
+    corsAllowlist.length === 0 || // dev only; production exits above if empty
+    corsAllowlist.includes(origin);
+
+  if (!allowed) {
+    return res.status(403).json({ error: { code: 'CORS_NOT_ALLOWED', message: 'Origin not allowed.' } });
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Vary', 'Origin');
+
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    return res.status(204).end();
+  }
+  next();
+});
 
 app.use(compression());
 app.use(morgan('dev'));
