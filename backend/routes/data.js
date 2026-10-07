@@ -153,39 +153,74 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// Allowlist mirrors routes/assessments.js. PDFs are the primary asset type for
+// course materials; the rest are tolerated for parity with assignment uploads.
+const assetFileExtensions = new Set(['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', '.md', '.png', '.jpg', '.jpeg', '.webp']);
+const ASSET_MAX_BYTES = 25 * 1024 * 1024; // 25 MB, matches assessments.js
+
+// Strip any directory components and dangerous characters from a user-supplied
+// filename. path.basename alone is not enough on Windows because it does not
+// remove drive letters or UNC prefixes from a POSIX-style string, and multer
+// hands us the raw Content-Disposition value.
+function sanitizeOriginalName(name) {
+  if (typeof name !== 'string') return 'file';
+  const base = path.basename(name.replace(/\\/g, '/'));
+  const cleaned = base.replace(/[\x00-\x1f\x7f<>:"|?*]/g, '').replace(/^\.+/, '').slice(0, 120);
+  return cleaned || 'file';
+}
+
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
+  destination: function (_req, _file, cb) {
     cb(null, uploadDir);
   },
-  filename: function (req, file, cb) {
-    cb(null, `document_${Date.now()}_${file.originalname}`);
+  filename: function (_req, file, cb) {
+    // Stored name is fully server-generated: random UUID + vetted extension.
+    // The original name is never used in the on-disk path, eliminating the
+    // path-traversal vector where `../../etc/foo` in originalname could escape
+    // uploadDir via path.join inside fs.createWriteStream.
+    const ext = (file.originalname.toLowerCase().match(/\.[^.]+$/) || [''])[0];
+    const safeExt = assetFileExtensions.has(ext) ? ext : '';
+    cb(null, `${crypto.randomUUID()}${safeExt}`);
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage,
+  limits: { files: 5, fileSize: ASSET_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const ext = (file.originalname.toLowerCase().match(/\.[^.]+$/) || [''])[0];
+    if (!assetFileExtensions.has(ext)) {
+      const err = Object.assign(new Error('Unsupported file type. Allowed: PDF, Word, PowerPoint, plain text, Markdown, PNG/JPG/WebP.'), { status: 400 });
+      return cb(err, false);
+    }
+    cb(null, true);
+  }
+});
 
 // POST /upload and POST /data/upload/:fileOrId
 async function uploadHandler(req, res, next) {
   try {
     const courseId = req.params.fileOrId && req.params.fileOrId !== 'undefined' ? req.params.fileOrId : null;
-    let filename = `document_${Date.now()}.pdf`;
-    let assetSize = 524288;
-    
+    let filename = `${crypto.randomUUID()}.pdf`;
+    let assetSize = 0;
+    let originalName = 'file.pdf';
+
     if (req.file) {
-      filename = req.file.filename;
+      filename = req.file.filename;          // server-generated UUID name
       assetSize = req.file.size;
+      originalName = sanitizeOriginalName(req.file.originalname);
     }
 
     const result = await query(
       `INSERT INTO data_assets (course_id, asset_name, asset_type, asset_size, uploaded_by)
        VALUES ($1, $2, 'pdf', $3, $4)
        RETURNING *`,
-      [courseId, filename, assetSize, req.user?.id || null]
+      [courseId, originalName, assetSize, req.user?.id || null]
     );
 
     res.status(200).json({
       success: true,
       file_id: String(result.rows[0].id),
-      asset_name: filename,
+      asset_name: originalName,
       filename
     });
   } catch (err) {
@@ -413,13 +448,14 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
       throw new Error('Failed to generate valid quiz format');
     }
 
-    // Return the correct_answer (as string index) and explanation to the browser so the UI can provide instant feedback.
+    // The answer key NEVER leaves the server. Clients submit answers to
+    // POST /ai/quizzes/:quizId/grade and receive per-question isCorrect + explanation
+    // only AFTER submission. Explanations are withheld pre-submission so the correct
+    // option cannot be inferred from hint text.
     const publicQuestions = quizQuestions.map((q) => ({
       id: q.id,
       question: q.question,
-      options: q.options,
-      correct_answer: String(q.correctIndex),
-      explanation: q.explanation
+      options: q.options
     }));
 
     // Keep the answer key in an ephemeral server-side store, keyed by a quiz id the
@@ -429,7 +465,11 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
       createdAt: Date.now(),
       courseId,
       topic,
-      questions: quizQuestions.map((q) => ({ id: q.id, correctIndex: q.correctIndex }))
+      questions: quizQuestions.map((q) => ({
+        id: q.id,
+        correctIndex: q.correctIndex,
+        explanation: q.explanation || ''
+      }))
     });
     pruneAiQuizKeys();
 
@@ -468,7 +508,13 @@ router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) =>
       const selected = pick(q.id);
       const isCorrect = selected !== undefined && selected !== null && Number(selected) === Number(q.correctIndex);
       if (isCorrect) correct += 1;
-      return { id: q.id, isCorrect };
+      // Safe to reveal AFTER submission: the client has already locked in answers.
+      return {
+        id: q.id,
+        isCorrect,
+        correctIndex: Number(q.correctIndex),
+        explanation: q.explanation || ''
+      };
     });
     const total = entry.questions.length;
     const percentage = total > 0 ? Math.round((correct / total) * 100) : 0;

@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
 import { query } from '../db/pool.js';
+import { getAccessSecret } from '../config/secrets.js';
 
-const getSecret = () => process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'fallback-secret';
+const getSecret = () => getAccessSecret();
 
 export async function authenticate(req, res, next) {
   const header = req.headers.authorization;

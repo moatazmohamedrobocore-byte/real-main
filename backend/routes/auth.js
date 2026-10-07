@@ -6,11 +6,9 @@ import nodemailer from 'nodemailer';
 import { query } from '../db/pool.js';
 import { authenticate } from '../middleware/auth.js';
 import { validateEmail, validateName, validatePassword, send400 } from '../middleware/validate.js';
+import { getAccessSecret, getRefreshSecret } from '../config/secrets.js';
 
 const router = Router();
-
-const getAccessSecret = () => process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'access-secret-32-chars-minimum-here';
-const getRefreshSecret = () => process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || 'refresh-secret-32-chars-minimum-here';
 
 function formatUser(u) {
   return {

@@ -11,6 +11,16 @@ import { fileURLToPath } from 'node:url';
 
 dotenv.config();
 
+import { validateSecrets } from './config/secrets.js';
+
+// Fail closed before anything else: weak/missing JWT secrets must not boot.
+try {
+  validateSecrets();
+} catch (err) {
+  console.error(`FATAL: ${err.message}`);
+  process.exit(1);
+}
+
 import { pool } from './db/pool.js';
 import authRoutes from './routes/auth.js';
 import courseRoutes from './routes/courses.js';
@@ -55,16 +65,26 @@ app.use(
   })
 );
 
-// CORS allowlist from env (comma-separated). Falls back to reflect origin if empty, for local dev.
+// CORS allowlist from env (comma-separated). Fail closed in production: an unset
+// CORS_ORIGIN must NOT silently become "allow every origin" once deployed.
 const corsAllowlist = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+const isProduction = process.env.NODE_ENV === 'production';
+if (isProduction && corsAllowlist.length === 0) {
+  console.error('FATAL: CORS_ORIGIN must be set in production (comma-separated allowlist). Refusing to start with a permissive CORS policy.');
+  process.exit(1);
+}
+if (!isProduction && corsAllowlist.length === 0) {
+  console.warn('[CORS] CORS_ORIGIN unset — running in permissive dev mode. Do NOT deploy without setting it.');
+}
+console.log(`[CORS] mode=${corsAllowlist.length === 0 ? 'permissive (dev)' : 'allowlist'} origins=${corsAllowlist.length ? corsAllowlist.join(',') : '(any)'} NODE_ENV=${process.env.NODE_ENV || '(unset)'}`);
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // same-origin / curl
-      if (corsAllowlist.length === 0) return cb(null, true); // dev
+      if (!origin) return cb(null, true); // same-origin / curl / health probes
+      if (corsAllowlist.length === 0) return cb(null, true); // dev only; prod exits above
       if (corsAllowlist.includes(origin)) return cb(null, true);
       return cb(new Error('CORS: origin not allowed'));
     },
