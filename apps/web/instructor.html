@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instructor Meetings | REAL_i</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #070d22; color: #edf1ff; }
+      * { box-sizing: border-box; } body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top right, #1a2451 0, transparent 36%), #070d22; }
+      .shell { max-width: 1180px; padding: 32px 20px 64px; margin: auto; } .top { display:flex; justify-content:space-between; gap:20px; align-items:center; margin-bottom:28px; }
+      h1 { margin:0; font-size:28px; } p { color:#aab4d2; } .eyebrow { color:#f0b94d; font-size:12px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; margin-bottom:8px; }
+      .actions, .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; } button { border:0; border-radius:11px; padding:11px 15px; cursor:pointer; font:inherit; font-weight:700; color:#091027; background:#f0b94d; } button.secondary { color:#e8edff; background:#1a2342; border:1px solid #33416c; } button.danger { color:#ffd9df; background:#4e1d31; } button:disabled { opacity:.55; cursor:not-allowed; }
+      .notice { display:none; margin:0 0 16px; padding:12px 14px; border-radius:10px; background:#143d38; color:#c6fff4; } .notice.error { background:#4a1d2a; color:#ffdce2; }
+      .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:22px; } .card, .panel { background:rgba(15,24,54,.88); border:1px solid #2e3b67; border-radius:17px; } .card { padding:18px; } .card strong { display:block; font-size:26px; margin-top:5px; } .panel { padding:20px; }
+      table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:15px 10px; border-bottom:1px solid #26335d; font-size:14px; } th { color:#97a5cc; font-size:11px; text-transform:uppercase; letter-spacing:.08em; } .status { border-radius:999px; display:inline-block; padding:5px 9px; font-size:11px; font-weight:800; text-transform:uppercase; } .scheduled { background:#26335d; color:#cbd6ff; } .live { background:#164b3d; color:#a9ffe1; } .ended { background:#353949; color:#c4c9df; }
+      dialog { max-width:560px; width:calc(100% - 32px); border:1px solid #405185; border-radius:18px; background:#111a38; color:#edf1ff; padding:24px; } dialog::backdrop { background:rgba(0,0,0,.7); } label { display:block; font-size:12px; font-weight:800; color:#bac5e8; margin:15px 0 6px; } input,textarea,select { width:100%; color:#edf1ff; background:#08102a; border:1px solid #354472; border-radius:10px; padding:11px; font:inherit; } textarea { min-height:120px; resize:vertical; }
+      .empty { padding:42px; text-align:center; color:#aab4d2; } @media(max-width:720px){.top{align-items:flex-start;flex-direction:column}.cards{grid-template-columns:1fr}.table-wrap{overflow:auto}th,td{white-space:nowrap}}
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="top">
+        <div><div class="eyebrow">REAL_i Instructor</div><h1>My Meetings</h1><p>Schedule, launch, and manage only the live sessions you host.</p></div>
+        <div class="actions"><button class="secondary" id="messageAdmin">Update admin</button><button id="newMeeting">Schedule meeting</button></div>
+      </div>
+      <div class="notice" id="notice"></div>
+      <section class="cards"><div class="card"><span>My sessions</span><strong id="total">0</strong></div><div class="card"><span>Live now</span><strong id="live">0</strong></div><div class="card"><span>Scheduled</span><strong id="scheduled">0</strong></div></section>
+      <section class="panel"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Meeting schedule</h2><button class="secondary" id="refresh">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Meeting</th><th>Course</th><th>When</th><th>Status</th><th></th></tr></thead><tbody id="meetings"></tbody></table></div><div class="empty" id="empty">Loading your meetings…</div></section>
+    </main>
+    <dialog id="meetingDialog"><form id="meetingForm"><h2>Schedule a meeting</h2><label for="title">Title</label><input id="title" required maxlength="200" placeholder="Weekly cohort session" /><label for="description">Agenda</label><textarea id="description" placeholder="What will you cover?"></textarea><label for="startsAt">Start time</label><input id="startsAt" type="datetime-local" required /><label for="duration">Duration</label><select id="duration"><option value="60">60 minutes</option><option value="90">90 minutes</option><option value="120">120 minutes</option></select><div class="actions" style="justify-content:flex-end;margin-top:20px"><button class="secondary" type="button" data-close>Cancel</button><button type="submit">Schedule</button></div></form></dialog>
+    <dialog id="messageDialog"><form id="messageForm"><h2>Update an admin</h2><p>Admins will receive this in their notifications.</p><label for="subject">Subject</label><input id="subject" required maxlength="200" placeholder="Meeting update" /><label for="message">Message</label><textarea id="message" required maxlength="5000" placeholder="Share the information an admin needs."></textarea><div class="actions" style="justify-content:flex-end;margin-top:20px"><button class="secondary" type="button" data-close>Cancel</button><button type="submit">Send update</button></div></form></dialog>
+    <script>
+      const token = localStorage.getItem('reali_token');
+      const notice = document.getElementById('notice');
+      const api = async (path, options = {}) => {
+        const response = await fetch('/v1' + path, { ...options, headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token, ...(options.headers || {}) } });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error?.message || 'Request failed.');
+        return body;
+      };
+      const show = (message, error = false) => { notice.textContent = message; notice.className = 'notice' + (error ? ' error' : ''); notice.style.display = 'block'; };
+      const meetingDialog = document.getElementById('meetingDialog'), messageDialog = document.getElementById('messageDialog');
+      document.querySelectorAll('[data-close]').forEach((button) => button.onclick = () => button.closest('dialog').close());
+      document.getElementById('newMeeting').onclick = () => meetingDialog.showModal();
+      document.getElementById('messageAdmin').onclick = () => messageDialog.showModal();
+      document.getElementById('refresh').onclick = () => loadMeetings();
+      async function loadMeetings() {
+        try {
+          const result = await api('/meetings'); const meetings = result.meetings || [];
+          document.getElementById('total').textContent = meetings.length; document.getElementById('live').textContent = meetings.filter(m => m.status === 'live').length; document.getElementById('scheduled').textContent = meetings.filter(m => m.status === 'scheduled').length;
+          const rows = document.getElementById('meetings'); rows.innerHTML = meetings.map(m => `<tr><td><strong>${escapeHtml(m.title)}</strong><br><small>${escapeHtml(m.description || '')}</small></td><td>${escapeHtml(m.courseName || 'General')}</td><td>${new Date(m.startsAt).toLocaleString()}</td><td><span class="status ${m.status}">${m.status}</span></td><td><div class="row">${m.status === 'scheduled' ? `<button onclick="launch('${m.id}')">Launch</button>` : ''}${m.status === 'live' ? `<button onclick="join('${m.roomSlug}')">Join</button>` : ''}<button class="danger" onclick="removeMeeting('${m.id}')">Delete</button></div></td></tr>`).join('');
+          document.getElementById('empty').style.display = meetings.length ? 'none' : 'block';
+        } catch (error) { show(error.message, true); }
+      }
+      function escapeHtml(value) { const node = document.createElement('span'); node.textContent = value; return node.innerHTML; }
+      window.launch = async (id) => { try { const result = await api('/meetings/' + id + '/launch', { method:'PUT' }); join(result.meeting.roomSlug); await loadMeetings(); } catch (error) { show(error.message, true); } };
+      window.join = (room) => window.open('https://meet.jit.si/' + encodeURIComponent(room), '_blank', 'noopener');
+      window.removeMeeting = async (id) => { if (!confirm('Delete this meeting?')) return; try { await api('/meetings/' + id, { method:'DELETE' }); show('Meeting deleted.'); loadMeetings(); } catch (error) { show(error.message, true); } };
+      document.getElementById('meetingForm').onsubmit = async (event) => { event.preventDefault(); try { const start = new Date(document.getElementById('startsAt').value); await api('/meetings', { method:'POST', body:JSON.stringify({ title:title.value, description:description.value, startsAt:start.toISOString(), expectedDurationMinutes:Number(duration.value) }) }); meetingDialog.close(); event.target.reset(); show('Meeting scheduled.'); loadMeetings(); } catch (error) { show(error.message, true); } };
+      document.getElementById('messageForm').onsubmit = async (event) => { event.preventDefault(); try { await api('/meeting-requests', { method:'POST', body:JSON.stringify({ subject:subject.value, message:message.value }) }); messageDialog.close(); event.target.reset(); show('Your update was sent to the admin team.'); } catch (error) { show(error.message, true); } };
+      if (!token) { show('Your session has expired. Please sign in again.', true); } else { loadMeetings(); }
+    </script>
+  </body>
+</html>

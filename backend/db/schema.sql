@@ -178,6 +178,17 @@ CREATE TABLE IF NOT EXISTS live_sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_course ON live_sessions(course_id, starts_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON live_sessions(status, starts_at);
 
+-- Messages that instructors send to platform administrators from their meeting workspace.
+CREATE TABLE IF NOT EXISTS instructor_admin_messages (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  instructor_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  meeting_id     UUID REFERENCES live_sessions(id) ON DELETE SET NULL,
+  subject        VARCHAR(200) NOT NULL,
+  message        TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_instructor_admin_messages_instructor ON instructor_admin_messages(instructor_id, created_at DESC);
+
 -- Attendance Records Table
 CREATE TABLE IF NOT EXISTS attendance_records (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
