@@ -25,6 +25,27 @@
         d.textContent = 'UNHANDLED PROMISE: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason);
         document.body.prepend(d);
       });
+
+      // Real-time auto-close for students
+      setInterval(() => {
+        if (window.location.pathname === '/student/live' || window.location.pathname.startsWith('/student/live/')) {
+          const urlParams = new URLSearchParams(window.location.search);
+          const meetingId = urlParams.get('meetingId') || urlParams.get('roomSlug') || window.location.pathname.split('/').pop();
+          const token = localStorage.getItem('reali_token');
+          if (meetingId && token) {
+            fetch(`/v1/meetings/${meetingId}/status`, {
+              headers: { 'Authorization': 'Bearer ' + token }
+            })
+            .then(res => res.json())
+            .then(data => {
+              if (data.status === 'ended') {
+                window.location.href = '/student?ended=1';
+              }
+            })
+            .catch(() => {});
+          }
+        }
+      }, 5000); // Check every 5 seconds
     </script>
     <script type="module" crossorigin src="/assets/index-BOtlBGmE.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-QTnfLwEv.js">

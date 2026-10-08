@@ -183,11 +183,11 @@ async function createMeetingHandler(req, res, next) {
   }
 }
 
-router.post('/meetings', authenticate, requireRoles('admin'), createMeetingHandler);
-router.post('/live-sessions', authenticate, requireRoles('admin'), createMeetingHandler);
+router.post('/meetings', authenticate, requireRoles('admin', 'instructor'), createMeetingHandler);
+router.post('/live-sessions', authenticate, requireRoles('admin', 'instructor'), createMeetingHandler);
 
 // PUT /meetings/:id (update meeting)
-router.put('/meetings/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
+router.put('/meetings/:id', authenticate, requireRoles('admin', 'instructor'), async (req, res, next) => {
   try {
     const { title, description, status, startsAt, endsAt } = req.body || {};
     const existingRes = await query('SELECT * FROM live_sessions WHERE id = $1', [req.params.id]);
@@ -217,7 +217,7 @@ router.put('/meetings/:id', authenticate, requireRoles('admin'), async (req, res
 });
 
 // DELETE /meetings/:id
-router.delete('/meetings/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
+router.delete('/meetings/:id', authenticate, requireRoles('admin', 'instructor'), async (req, res, next) => {
   try {
     const deleted = await query('DELETE FROM live_sessions WHERE id = $1 RETURNING id', [req.params.id]);
     if (!deleted.rows.length) return res.status(404).json({ error: { code: 'MEETING_NOT_FOUND', message: 'Meeting not found.' } });
@@ -245,18 +245,24 @@ async function launchMeetingHandler(req, res, next) {
     next(err);
   }
 }
-router.put('/meetings/:id/launch', authenticate, requireRoles('admin'), launchMeetingHandler);
-router.post('/meetings/:id/launch', authenticate, requireRoles('admin'), launchMeetingHandler);
+router.put('/meetings/:id/launch', authenticate, requireRoles('admin', 'instructor'), launchMeetingHandler);
+router.post('/meetings/:id/launch', authenticate, requireRoles('admin', 'instructor'), launchMeetingHandler);
 
 // PUT /meetings/:id/end & POST /meetings/:id/end
 async function endMeetingHandler(req, res, next) {
   try {
+    const idParam = req.params.id;
+    let sessionId = idParam;
+    if (idParam && idParam.length !== 36) {
+      const sessRes = await query('SELECT id FROM live_sessions WHERE provider_room_id = $1', [idParam]);
+      if (sessRes.rows.length > 0) sessionId = sessRes.rows[0].id;
+    }
     const result = await query(
       `UPDATE live_sessions
        SET status = 'ended', updated_at = now()
        WHERE id = $1
        RETURNING *`,
-      [req.params.id]
+      [sessionId]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { code: 'MEETING_NOT_FOUND', message: 'Meeting not found.' } });
@@ -269,15 +275,36 @@ async function endMeetingHandler(req, res, next) {
            END,
            active_joined_at = NULL, last_event_at = now(), updated_at = now()
        WHERE session_id = $1 AND active_joined_at IS NOT NULL`,
-      [req.params.id]
+        [sessionId]
     );
     res.json({ success: true, status: 'ended', meeting: formatMeeting(result.rows[0]) });
   } catch (err) {
     next(err);
   }
 }
-router.put('/meetings/:id/end', authenticate, requireRoles('admin'), endMeetingHandler);
-router.post('/meetings/:id/end', authenticate, requireRoles('admin'), endMeetingHandler);
+router.put('/meetings/:id/end', authenticate, requireRoles('admin', 'instructor'), endMeetingHandler);
+router.post('/meetings/:id/end', authenticate, requireRoles('admin', 'instructor'), endMeetingHandler);
+router.put('/live-sessions/:id/end', authenticate, requireRoles('admin', 'instructor'), endMeetingHandler);
+router.post('/live-sessions/:id/end', authenticate, requireRoles('admin', 'instructor'), endMeetingHandler);
+
+// GET /meetings/:id/status (for auto-closing)
+router.get('/meetings/:id/status', authenticate, async (req, res, next) => {
+  try {
+    const idParam = req.params.id;
+    let sessionId = idParam;
+    if (idParam && idParam.length !== 36) {
+      const sessRes = await query('SELECT id FROM live_sessions WHERE provider_room_id = $1', [idParam]);
+      if (sessRes.rows.length > 0) sessionId = sessRes.rows[0].id;
+    }
+    const result = await query('SELECT status FROM live_sessions WHERE id = $1', [sessionId]);
+    if (result.rows.length > 0) {
+      return res.json({ status: result.rows[0].status });
+    }
+    return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Meeting not found' }});
+  } catch (err) {
+    next(err);
+  }
+});
 
 // POST /live-sessions/:sessionId/join-token & POST /meetings/authorize-join
 async function authorizeJoinHandler(req, res, next) {
@@ -299,15 +326,14 @@ async function authorizeJoinHandler(req, res, next) {
     // clicking the sidebar no longer instantly launches and joins a session.
     const wantsStart = req.body?.start === true || req.body?.start === 'true';
     if (sessionRes.rows.length === 0 && !sessionId && !req.body?.roomSlug && !req.body?.roomName && !req.body?.room) {
-      const isStaff = req.user.role === 'admin';
+      const isStaff = (req.user.role === 'admin' || req.user.role === 'instructor');
       if (isStaff) {
         const liveRes = await query(
           `SELECT * FROM live_sessions WHERE status = 'live' ORDER BY starts_at DESC LIMIT 1`
         );
         if (liveRes.rows.length > 0) {
           sessionRes = liveRes;
-        } else {
-          // Auto-start a new session to bypass the frontend "Waiting for Instructor" trap
+        } else if (wantsStart) {
           const courseRes = await query('SELECT id FROM courses ORDER BY created_at ASC LIMIT 1');
           if (courseRes.rows.length === 0) {
             return res.status(400).json({ error: { code: 'NO_COURSE_AVAILABLE', message: 'Create a course before starting a live session.' } });
@@ -322,6 +348,18 @@ async function authorizeJoinHandler(req, res, next) {
             [courseRes.rows[0].id, req.user.id, roomId, 'Live Session', 'Instant session started from the Live Classes page.', start, end]
           );
           sessionRes = created;
+        } else {
+          // No active session and the host has not asked to start one: tell the client to show
+          // a "Start Session" button instead of auto-joining a freshly created room.
+          return res.json({
+            success: true,
+            authorized: false,
+            canStart: true,
+            waitingForHost: true,
+            isHost: true,
+            reason: 'NO_ACTIVE_SESSION',
+            message: 'No active live session. Start one when you are ready.'
+          });
         }
       }
     }
@@ -331,10 +369,22 @@ async function authorizeJoinHandler(req, res, next) {
     }
 
     const session = sessionRes.rows[0];
-    const isHost = req.user.role === 'admin' || String(session.host_id) === String(req.user.id);
+    const isHost = (req.user.role === 'admin' || req.user.role === 'instructor') || String(session.host_id) === String(req.user.id);
+
+    if (session.status === 'ended') {
+      return res.json({
+        success: true,
+        authorized: false,
+        canStart: false,
+        waitingForHost: false,
+        isHost,
+        reason: 'SESSION_ENDED',
+        message: 'This live session has ended. You can no longer join.'
+      });
+    }
 
     // Enrollment gatekeeper: staff may host; students must already be enrolled.
-    const isStaff = req.user.role === 'admin';
+    const isStaff = (req.user.role === 'admin' || req.user.role === 'instructor');
     if (!isStaff && !isHost) {
       const enrollmentRes = await query(
         "SELECT 1 FROM enrollments WHERE student_id = $1 AND course_id = $2 AND status IN ('enrolled', 'completed')",
@@ -434,8 +484,8 @@ async function getAttendanceHandler(req, res, next) {
     next(err);
   }
 }
-router.get('/live-sessions/:sessionId/attendance', authenticate, requireRoles('admin'), getAttendanceHandler);
-router.get('/meetings/:sessionId/attendance', authenticate, requireRoles('admin'), getAttendanceHandler);
+router.get('/live-sessions/:sessionId/attendance', authenticate, requireRoles('admin', 'instructor'), getAttendanceHandler);
+router.get('/meetings/:sessionId/attendance', authenticate, requireRoles('admin', 'instructor'), getAttendanceHandler);
 
 // POST /live-sessions/:sessionId/attendance/join
 async function attendanceJoinHandler(req, res, next) {
@@ -527,10 +577,15 @@ router.post('/meetings/attendance/sync', authenticate, async (req, res, next) =>
 });
 
 // POST /live-sessions/:sessionId/polls
-router.post('/live-sessions/:sessionId/polls', authenticate, requireRoles('admin'), async (req, res, next) => {
+async function createPollHandler(req, res, next) {
   try {
     const { question, responseType = 'single_choice', options = [] } = req.body || {};
-    const sessRes = await query('SELECT course_id FROM live_sessions WHERE id = $1', [req.params.sessionId]);
+    let sessionId = req.params.sessionId || req.body.sessionId;
+    if (sessionId && sessionId.length !== 36) {
+      const sessRes = await query('SELECT id FROM live_sessions WHERE provider_room_id = $1', [sessionId]);
+      if (sessRes.rows.length > 0) sessionId = sessRes.rows[0].id;
+    }
+    const sessRes = await query('SELECT course_id FROM live_sessions WHERE id = $1', [sessionId]);
     if (sessRes.rows.length === 0) {
       return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Session not found.' } });
     }
@@ -540,20 +595,28 @@ router.post('/live-sessions/:sessionId/polls', authenticate, requireRoles('admin
       `INSERT INTO polls (session_id, course_id, created_by, question, response_type, options, status, opens_at)
        VALUES ($1, $2, $3, $4, $5, $6, 'open', now())
        RETURNING *`,
-      [req.params.sessionId, courseId, req.user.id, question.trim(), responseType, JSON.stringify(options)]
+      [sessionId, courseId, req.user.id, question.trim(), responseType, JSON.stringify(options)]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
     next(err);
   }
-});
+}
+router.post('/live-sessions/:sessionId/polls', authenticate, requireRoles('admin', 'instructor'), createPollHandler);
+router.post('/meetings/polls/create', authenticate, requireRoles('admin', 'instructor'), createPollHandler);
 
 // POST /live-sessions/:sessionId/polls/:pollId/votes
-router.post('/live-sessions/:sessionId/polls/:pollId/votes', authenticate, async (req, res, next) => {
+async function votePollHandler(req, res, next) {
   try {
     const { optionKeys = [], responseText = null } = req.body || {};
-    const pollRes = await query('SELECT course_id FROM polls WHERE id = $1', [req.params.pollId]);
+    let sessionId = req.params.sessionId || req.body.sessionId;
+    if (sessionId && sessionId.length !== 36) {
+      const sessRes = await query('SELECT id FROM live_sessions WHERE provider_room_id = $1', [sessionId]);
+      if (sessRes.rows.length > 0) sessionId = sessRes.rows[0].id;
+    }
+    const pollId = req.params.pollId || req.body.pollId;
+    const pollRes = await query('SELECT course_id FROM polls WHERE id = $1', [pollId]);
     if (pollRes.rows.length === 0) {
       return res.status(404).json({ error: { code: 'POLL_NOT_FOUND', message: 'Poll not found.' } });
     }
@@ -565,14 +628,16 @@ router.post('/live-sessions/:sessionId/polls/:pollId/votes', authenticate, async
        ON CONFLICT (poll_id, student_id)
        DO UPDATE SET option_keys = EXCLUDED.option_keys, response_text = EXCLUDED.response_text
        RETURNING *`,
-      [req.params.pollId, req.params.sessionId, courseId, req.user.id, JSON.stringify(optionKeys), responseText]
+      [pollId, sessionId, courseId, req.user.id, JSON.stringify(optionKeys), responseText]
     );
 
     res.status(201).json({ success: true, vote: result.rows[0] });
   } catch (err) {
     next(err);
   }
-});
+}
+router.post('/live-sessions/:sessionId/polls/:pollId/votes', authenticate, votePollHandler);
+router.post('/meetings/polls/vote', authenticate, votePollHandler);
 
 // GET /live-sessions/:sessionId/polls/:pollId/tally
 router.get('/live-sessions/:sessionId/polls/:pollId/tally', authenticate, async (req, res, next) => {
@@ -592,12 +657,12 @@ router.get('/live-sessions/:sessionId/polls/:pollId/tally', authenticate, async 
 });
 
 // DELETE /meetings/series/:id
-router.delete('/meetings/series/:id', authenticate, requireRoles('admin'), async (_req, res) => {
+router.delete('/meetings/series/:id', authenticate, requireRoles('admin', 'instructor'), async (_req, res) => {
   res.json({ success: true, message: 'Meeting series deleted.' });
 });
 
 // POST /meetings/:id/generate-summary
-router.post('/meetings/:id/generate-summary', authenticate, requireRoles('admin'), async (req, res, next) => {
+router.post('/meetings/:id/generate-summary', authenticate, requireRoles('admin', 'instructor'), async (req, res, next) => {
   try {
     const meetingRes = await query('SELECT title, description FROM live_sessions WHERE id = $1', [req.params.id]);
     if (meetingRes.rows.length === 0) {
