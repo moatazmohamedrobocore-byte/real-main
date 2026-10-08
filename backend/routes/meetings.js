@@ -306,7 +306,8 @@ async function authorizeJoinHandler(req, res, next) {
         );
         if (liveRes.rows.length > 0) {
           sessionRes = liveRes;
-        } else if (wantsStart) {
+        } else {
+          // Auto-start a new session to bypass the frontend "Waiting for Instructor" trap
           const courseRes = await query('SELECT id FROM courses ORDER BY created_at ASC LIMIT 1');
           if (courseRes.rows.length === 0) {
             return res.status(400).json({ error: { code: 'NO_COURSE_AVAILABLE', message: 'Create a course before starting a live session.' } });
@@ -321,18 +322,6 @@ async function authorizeJoinHandler(req, res, next) {
             [courseRes.rows[0].id, req.user.id, roomId, 'Live Session', 'Instant session started from the Live Classes page.', start, end]
           );
           sessionRes = created;
-        } else {
-          // No active session and the host has not asked to start one: tell the client to show
-          // a "Start Session" button instead of auto-joining a freshly created room.
-          return res.json({
-            success: true,
-            authorized: false,
-            canStart: true,
-            waitingForHost: true,
-            isHost: true,
-            reason: 'NO_ACTIVE_SESSION',
-            message: 'No active live session. Start one when you are ready.'
-          });
         }
       }
     }
