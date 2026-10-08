@@ -291,7 +291,10 @@ async function authorizeJoinHandler(req, res, next) {
     }
 
     // Staff opening the live room without a specific session (e.g. sidebar "Live Classes"):
-    // reuse the most recent live session, or start a new one on the spot.
+    // reuse the most recent live session if one is already running. Do NOT auto-create a new
+    // session — starting a room is an explicit host action (req.body.start === true), so simply
+    // clicking the sidebar no longer instantly launches and joins a session.
+    const wantsStart = req.body?.start === true || req.body?.start === 'true';
     if (sessionRes.rows.length === 0 && !sessionId && !req.body?.roomSlug && !req.body?.roomName && !req.body?.room) {
       const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
       if (isStaff) {
@@ -300,7 +303,7 @@ async function authorizeJoinHandler(req, res, next) {
         );
         if (liveRes.rows.length > 0) {
           sessionRes = liveRes;
-        } else {
+        } else if (wantsStart) {
           const courseRes = await query('SELECT id FROM courses ORDER BY created_at ASC LIMIT 1');
           if (courseRes.rows.length === 0) {
             return res.status(400).json({ error: { code: 'NO_COURSE_AVAILABLE', message: 'Create a course before starting a live session.' } });
@@ -315,6 +318,18 @@ async function authorizeJoinHandler(req, res, next) {
             [courseRes.rows[0].id, req.user.id, roomId, 'Live Session', 'Instant session started from the Live Classes page.', start, end]
           );
           sessionRes = created;
+        } else {
+          // No active session and the host has not asked to start one: tell the client to show
+          // a "Start Session" button instead of auto-joining a freshly created room.
+          return res.json({
+            success: true,
+            authorized: false,
+            canStart: true,
+            waitingForHost: true,
+            isHost: true,
+            reason: 'NO_ACTIVE_SESSION',
+            message: 'No active live session. Start one when you are ready.'
+          });
         }
       }
     }
