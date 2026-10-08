@@ -247,8 +247,6 @@ router.get('/assessments/:id', authenticate, async (req, res, next) => {
       if (assessment.status !== 'published' || enrollment.rows.length === 0) {
         return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'This assessment is not available to you.' } });
       }
-    } else if (req.user.role === 'instructor' && String(assessment.author_id) !== String(req.user.id)) {
-      return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'You do not have permission to view this assessment.' } });
     }
 
     res.json(formatAssessment(assessment));
@@ -303,8 +301,8 @@ async function createAssessmentHandler(req, res, next) {
   }
 }
 
-router.post('/courses/:courseId/assessments', authenticate, requireRoles('instructor', 'admin'), createAssessmentHandler);
-router.post('/assessments', authenticate, requireRoles('instructor', 'admin'), createAssessmentHandler);
+router.post('/courses/:courseId/assessments', authenticate, requireRoles('admin'), createAssessmentHandler);
+router.post('/assessments', authenticate, requireRoles('admin'), createAssessmentHandler);
 
 // PATCH /assessments/:id and PUT /assessments/:id
 async function updateAssessmentHandler(req, res, next) {
@@ -348,8 +346,8 @@ async function updateAssessmentHandler(req, res, next) {
   }
 }
 
-router.patch('/assessments/:id', authenticate, requireRoles('instructor', 'admin'), updateAssessmentHandler);
-router.put('/assessments/:id', authenticate, requireRoles('instructor', 'admin'), updateAssessmentHandler);
+router.patch('/assessments/:id', authenticate, requireRoles('admin'), updateAssessmentHandler);
+router.put('/assessments/:id', authenticate, requireRoles('admin'), updateAssessmentHandler);
 
 // POST /assessments/:id/publish & PATCH /assessments/:id/publish
 async function publishAssessmentHandler(req, res, next) {
@@ -369,11 +367,11 @@ async function publishAssessmentHandler(req, res, next) {
     next(err);
   }
 }
-router.post('/assessments/:id/publish', authenticate, requireRoles('instructor', 'admin'), publishAssessmentHandler);
-router.patch('/assessments/:id/publish', authenticate, requireRoles('instructor', 'admin'), publishAssessmentHandler);
+router.post('/assessments/:id/publish', authenticate, requireRoles('admin'), publishAssessmentHandler);
+router.patch('/assessments/:id/publish', authenticate, requireRoles('admin'), publishAssessmentHandler);
 
 // DELETE /assessments/:id
-router.delete('/assessments/:id', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.delete('/assessments/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     await query('DELETE FROM assessments WHERE id = $1', [req.params.id]);
     res.json({ success: true, message: 'Assessment deleted.' });
@@ -723,8 +721,8 @@ async function authorizeSubmissionFileAccess(req, res, next) {
       [req.params.submissionId]
     );
     if (!result.rows.length) return res.status(404).json({ error: { code: 'SUBMISSION_NOT_FOUND', message: 'Submission not found.' } });
-    const { student_id: studentId, author_id: authorId } = result.rows[0];
-    if (req.user.role !== 'admin' && String(req.user.id) !== String(studentId) && !(req.user.role === 'instructor' && String(req.user.id) === String(authorId))) {
+    const { student_id: studentId } = result.rows[0];
+    if (req.user.role !== 'admin' && String(req.user.id) !== String(studentId)) {
       return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'You cannot access these submission files.' } });
     }
     next();
@@ -758,7 +756,7 @@ router.get('/attempts/:submissionId/files/:fileId', authenticate, authorizeSubmi
   } catch (err) { next(err); }
 });
 
-router.get('/attempts/:submissionId/review', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.get('/attempts/:submissionId/review', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const result = await query(
       `SELECT s.id, s.student_id, u.name AS student_name, u.email AS student_email,
@@ -815,7 +813,7 @@ router.get('/attempts/:submissionId/review', authenticate, requireRoles('instruc
 });
 
 // GET /assessments/:id/submissions
-router.get('/assessments/:id/submissions', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.get('/assessments/:id/submissions', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const result = await query(
       `SELECT s.id, u.id AS student_id, u.name AS student_name, u.email AS student_email,
@@ -871,7 +869,7 @@ router.get('/assessments/:id/submissions', authenticate, requireRoles('instructo
 });
 
 // GET /courses/:courseId/grading-queue
-router.get('/courses/:courseId/grading-queue', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.get('/courses/:courseId/grading-queue', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const result = await query(
       `SELECT s.*, u.name as student_name, a.title as assessment_title
@@ -889,7 +887,7 @@ router.get('/courses/:courseId/grading-queue', authenticate, requireRoles('instr
 });
 
 // PATCH /attempts/:submissionId/grade
-router.patch('/attempts/:submissionId/grade', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.patch('/attempts/:submissionId/grade', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const { score, feedback, comments, suggestions } = req.body || {};
     const result = await query(

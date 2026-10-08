@@ -109,8 +109,8 @@ async function createGuideline(req, res, next) {
     next(err);
   }
 }
-router.post('/admin/guidelines', authenticate, requireRoles('instructor', 'admin'), createGuideline);
-router.post('/guidelines', authenticate, requireRoles('instructor', 'admin'), createGuideline);
+router.post('/admin/guidelines', authenticate, requireRoles('admin'), createGuideline);
+router.post('/guidelines', authenticate, requireRoles('admin'), createGuideline);
 
 // PUT /admin/guidelines/:id/toggle
 router.put('/admin/guidelines/:id/toggle', authenticate, requireRoles('admin'), async (req, res, next) => {
@@ -175,7 +175,7 @@ async function getSettingsRow() {
   return result.rows[0];
 }
 
-router.get('/admin/settings', authenticate, requireRoles('instructor', 'admin'), async (_req, res, next) => {
+router.get('/admin/settings', authenticate, requireRoles('admin'), async (_req, res, next) => {
   try {
     res.json(formatSettings(await getSettingsRow()));
   } catch (err) {
@@ -225,7 +225,7 @@ router.put('/admin/settings', authenticate, requireRoles('admin'), async (req, r
 });
 
 // GET /analytics/kpis
-router.get('/analytics/kpis', authenticate, requireRoles('instructor', 'admin'), async (_req, res, next) => {  try {
+router.get('/analytics/kpis', authenticate, requireRoles('admin'), async (_req, res, next) => {  try {
     const [learnersRes, enrollRes, gradeRes, liveRes] = await Promise.all([
       query('SELECT COUNT(DISTINCT student_id) as count FROM enrollments WHERE status = \'enrolled\''),
       query('SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = \'completed\') as completed FROM enrollments'),

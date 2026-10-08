@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
   email         VARCHAR(254) NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   name          VARCHAR(120) NOT NULL,
-  role          VARCHAR(20) NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'instructor', 'admin')),
+  role          VARCHAR(20) NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
   avatar        TEXT DEFAULT NULL,
   last_login_at TIMESTAMPTZ,
   deleted_at    TIMESTAMPTZ DEFAULT NULL,
@@ -16,6 +16,11 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+-- Existing deployments may contain instructor accounts from older versions.
+-- Preserve those accounts and their ownership by promoting them to admin.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+UPDATE users SET role = 'admin' WHERE role = 'instructor';
+ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('student', 'admin'));
 
 -- Refresh Tokens
 CREATE TABLE IF NOT EXISTS refresh_tokens (
@@ -177,17 +182,6 @@ CREATE TABLE IF NOT EXISTS live_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_course ON live_sessions(course_id, starts_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON live_sessions(status, starts_at);
-
--- Messages that instructors send to platform administrators from their meeting workspace.
-CREATE TABLE IF NOT EXISTS instructor_admin_messages (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  instructor_id  UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  meeting_id     UUID REFERENCES live_sessions(id) ON DELETE SET NULL,
-  subject        VARCHAR(200) NOT NULL,
-  message        TEXT NOT NULL,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_instructor_admin_messages_instructor ON instructor_admin_messages(instructor_id, created_at DESC);
 
 -- Attendance Records Table
 CREATE TABLE IF NOT EXISTS attendance_records (

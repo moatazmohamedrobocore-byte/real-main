@@ -108,21 +108,21 @@ async function verifyAllRoles() {
   console.log(`     Completed tasks: ${studentProfile.data.completed_tasks.length}`);
 
   // =========================================================
-  // 2. INSTRUCTOR ROLE
+  // 2. SECOND ADMIN ACCOUNT
   // =========================================================
-  console.log('\n\n>>> 2. LOGGING IN AS INSTRUCTOR (instructor@local.test)...');
+  console.log('\n\n>>> 2. LOGGING IN AS SECOND ADMIN (admin2@local.test)...');
   const instLogin = await req('POST', '/auth/login', null, {
-    email: 'instructor@local.test',
-    password: 'LocalInstructor1234'
+    email: 'admin2@local.test',
+    password: 'LocalAdmin1234'
   });
-  if (!instLogin.ok) throw new Error('Instructor login failed');
+  if (!instLogin.ok) throw new Error('Second admin login failed');
   const iToken = instLogin.data.token;
-  console.log('   ✓ Instructor logged in:', instLogin.data.user.name);
+  console.log('   ✓ Second admin logged in:', instLogin.data.user.name);
 
-  console.log('\n--- Instructor Course Management ---');
+  console.log('\n--- Admin Course Management ---');
   const newInstCourse = await req('POST', '/courses', iToken, {
-    title: 'Instructor Special Topics in AI',
-    description: 'Advanced course created by instructor',
+    title: 'Admin Special Topics in AI',
+    description: 'Advanced course created by an admin',
     category: 'AI & ML',
     difficulty: 'advanced',
     status: 'published'
@@ -136,7 +136,7 @@ async function verifyAllRoles() {
   });
   console.log(`   ✓ Added lesson: "${addLesson.data.title}"`);
 
-  console.log('\n--- Instructor Grading Queue ---');
+  console.log('\n--- Admin Grading Queue ---');
   const queue = await req('GET', `/courses/${demoCourse.id}/grading-queue`, iToken);
   console.log(`   ✓ Grading queue fetched for demo course: ${queue.data.length} submission(s)`);
 
@@ -147,9 +147,9 @@ async function verifyAllRoles() {
   });
   console.log(`   ✓ Graded submission ${subId}: status = ${gradeRes.data.grading_status}, score = ${gradeRes.data.grading_score}`);
 
-  console.log('\n--- Instructor Meeting Launch ---');
+  console.log('\n--- Admin Meeting Launch ---');
   const instMeeting = await req('POST', '/meetings', iToken, {
-    title: 'Office Hours with Instructor',
+    title: 'Office Hours with Admin',
     description: 'Weekly interactive Q&A session',
     courseId: iCourseId,
     startsAt: new Date(),
@@ -164,7 +164,7 @@ async function verifyAllRoles() {
   const endMeeting = await req('PUT', `/meetings/${instMeetingId}/end`, iToken);
   console.log(`   ✓ Ended meeting: status is now "${endMeeting.data.status}"`);
 
-  // Clean up instructor test course
+  // Clean up second-admin test course
   await req('DELETE', `/courses/${iCourseId}`, iToken);
 
   // =========================================================

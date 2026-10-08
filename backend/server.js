@@ -219,12 +219,6 @@ if (fs.existsSync(path.join(webRoot, 'index.html'))) {
     }
   }));
 
-  // The legacy React bundle has admin and student shells only. Instructors get a
-  // deliberately limited meeting workspace instead of being sent to the student UI.
-  app.get('/instructor', (_req, res) => {
-    res.sendFile(path.join(webRoot, 'instructor.html'));
-  });
-
   // Client-side SPA routing fallback
   app.get(/^(?!\/v1\/|\/api\/|\/health).*/, (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();

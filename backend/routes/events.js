@@ -162,8 +162,8 @@ async function createEventHandler(req, res, next) {
   }
 }
 
-router.post('/calendar/events', authenticate, requireRoles('instructor', 'admin'), createEventHandler);
-router.post('/events', authenticate, requireRoles('instructor', 'admin'), createEventHandler);
+router.post('/calendar/events', authenticate, requireRoles('admin'), createEventHandler);
+router.post('/events', authenticate, requireRoles('admin'), createEventHandler);
 
 // DELETE /events/:id
 router.delete('/events/:id', authenticate, requireRoles('admin'), async (req, res, next) => {

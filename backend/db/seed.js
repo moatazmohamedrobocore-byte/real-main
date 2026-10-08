@@ -11,7 +11,7 @@ async function seed() {
     // 1. Seed Users
     const users = [
       { email: 'admin@local.test', name: 'Local Admin', role: 'admin', password: 'LocalAdmin1234' },
-      { email: 'instructor@local.test', name: 'Local Instructor', role: 'instructor', password: 'LocalInstructor1234' },
+      { email: 'admin2@local.test', name: 'Local Admin 2', role: 'admin', password: 'LocalAdmin1234' },
       { email: 'student@local.test', name: 'Local Student', role: 'student', password: 'LocalStudent1234' }
     ];
 
@@ -26,13 +26,13 @@ async function seed() {
          RETURNING id, email, role, name`,
         [u.email, hash, u.name, u.role]
       );
-      userMap[u.role] = res.rows[0];
+      userMap[u.email] = res.rows[0];
       console.log(`Seeded user: ${u.email} (${u.role})`);
     }
 
-    const instructorId = userMap.instructor.id;
-    const studentId = userMap.student.id;
-    const adminId = userMap.admin.id;
+    const instructorId = userMap['admin2@local.test'].id;
+    const studentId = userMap['student@local.test'].id;
+    const adminId = userMap['admin@local.test'].id;
 
     // 2. Seed Courses
     const course1Res = await client.query(

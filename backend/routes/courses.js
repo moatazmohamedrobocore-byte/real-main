@@ -167,7 +167,7 @@ router.get('/:id', authenticateOptional, async (req, res, next) => {
 });
 
 // POST / (create course)
-router.post('/', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.post('/', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const { title, description, category, difficulty, pricing, status = 'draft', enrollmentOpen = true } = req.body || {};
     if (!title || !description) {
@@ -247,11 +247,11 @@ async function updateCourseHandler(req, res, next) {
   }
 }
 
-router.patch('/:id', authenticate, requireRoles('instructor', 'admin'), updateCourseHandler);
-router.put('/:id', authenticate, requireRoles('instructor', 'admin'), updateCourseHandler);
+router.patch('/:id', authenticate, requireRoles('admin'), updateCourseHandler);
+router.put('/:id', authenticate, requireRoles('admin'), updateCourseHandler);
 
 // DELETE /:id (archive course)
-router.delete('/:id', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.delete('/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const existingRes = await query('SELECT * FROM courses WHERE id = $1', [req.params.id]);
     if (existingRes.rows.length === 0) {
@@ -302,7 +302,7 @@ router.post('/:courseId/enroll', authenticate, async (req, res, next) => {
 });
 
 // POST /:courseId/enroll/:id (admin enroll student)
-router.post('/:courseId/enroll/:id', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.post('/:courseId/enroll/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const result = await query(
       `INSERT INTO enrollments (student_id, course_id, status, enrolled_at)
@@ -319,7 +319,7 @@ router.post('/:courseId/enroll/:id', authenticate, requireRoles('instructor', 'a
 });
 
 // DELETE /:courseId/enroll/:id (admin unenroll student)
-router.delete('/:courseId/enroll/:id', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.delete('/:courseId/enroll/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     await query(
       `UPDATE enrollments SET status = 'dropped', dropped_at = now()
@@ -334,7 +334,7 @@ router.delete('/:courseId/enroll/:id', authenticate, requireRoles('instructor', 
 
 // Lessons Sub-routes
 // POST /:courseId/lessons
-router.post('/:courseId/lessons', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.post('/:courseId/lessons', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const { title, content, status = 'published' } = req.body || {};
     if (!title || !content) {
@@ -371,7 +371,7 @@ router.get('/:courseId/lessons/:lessonId', authenticateOptional, async (req, res
 });
 
 // PATCH /:courseId/lessons/:lessonId
-router.patch('/:courseId/lessons/:lessonId', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.patch('/:courseId/lessons/:lessonId', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const { title, content, status } = req.body || {};
     const existing = await query('SELECT * FROM lessons WHERE id = $1 AND course_id = $2', [req.params.lessonId, req.params.courseId]);
@@ -399,7 +399,7 @@ router.patch('/:courseId/lessons/:lessonId', authenticate, requireRoles('instruc
 });
 
 // DELETE /:courseId/lessons/:lessonId
-router.delete('/:courseId/lessons/:lessonId', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.delete('/:courseId/lessons/:lessonId', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     await query('DELETE FROM lessons WHERE id = $1 AND course_id = $2', [req.params.lessonId, req.params.courseId]);
     res.status(204).send();

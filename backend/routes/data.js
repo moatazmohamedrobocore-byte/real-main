@@ -89,7 +89,7 @@ router.get('/data/projects', authenticate, async (req, res, next) => {
 });
 
 // DELETE /data/projects/:id
-router.delete('/data/projects/:id', authenticate, requireRoles('instructor', 'admin'), async (req, res, next) => {
+router.delete('/data/projects/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const existing = await query('SELECT * FROM courses WHERE id = $1', [req.params.id]);
     if (existing.rows.length === 0) {
@@ -598,7 +598,7 @@ router.post('/admin/task/create', authenticate, requireRoles('admin'), async (re
 
     // Gather live platform facts to ground the answer.
     const [usersRes, coursesRes, enrollRes, assessRes, subRes, liveRes, guideRes] = await Promise.all([
-      query("SELECT COUNT(*) FILTER (WHERE role='student') AS students, COUNT(*) FILTER (WHERE role='instructor') AS instructors, COUNT(*) FILTER (WHERE role='admin') AS admins, COUNT(*) AS total FROM users WHERE deleted_at IS NULL"),
+      query("SELECT COUNT(*) FILTER (WHERE role='student') AS students, COUNT(*) FILTER (WHERE role='admin') AS admins, COUNT(*) AS total FROM users WHERE deleted_at IS NULL"),
       query("SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='published') AS published FROM courses WHERE status != 'archived'"),
       query("SELECT COUNT(*) AS total FROM enrollments WHERE status IN ('enrolled','completed')"),
       query("SELECT COUNT(*) AS total FROM assessments WHERE status='published'"),
@@ -610,7 +610,6 @@ router.post('/admin/task/create', authenticate, requireRoles('admin'), async (re
     const facts = {
       totalUsers: Number(usersRes.rows[0].total),
       students: Number(usersRes.rows[0].students),
-      instructors: Number(usersRes.rows[0].instructors),
       admins: Number(usersRes.rows[0].admins),
       courses: Number(coursesRes.rows[0].total),
       publishedCourses: Number(coursesRes.rows[0].published),
@@ -645,7 +644,7 @@ router.post('/admin/task/create', authenticate, requireRoles('admin'), async (re
     }
 
     if (!answer) {
-      answer = `Platform snapshot — ${facts.students} students, ${facts.instructors} instructors, ${facts.admins} admins (${facts.totalUsers} users total); ${facts.publishedCourses} published of ${facts.courses} courses; ${facts.enrollments} active enrollments; ${facts.publishedAssessments} published assessments; average submission score ${facts.averageScore ?? 'n/a'}; ${facts.liveSessions} live of ${facts.totalSessions} sessions; ${facts.activeGuidelines} active guidelines.`;
+      answer = `Platform snapshot — ${facts.students} students and ${facts.admins} admins (${facts.totalUsers} users total); ${facts.publishedCourses} published of ${facts.courses} courses; ${facts.enrollments} active enrollments; ${facts.publishedAssessments} published assessments; average submission score ${facts.averageScore ?? 'n/a'}; ${facts.liveSessions} live of ${facts.totalSessions} sessions; ${facts.activeGuidelines} active guidelines.`;
     }
 
     let taskId = null;

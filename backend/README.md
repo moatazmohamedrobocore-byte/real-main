@@ -75,7 +75,7 @@ npm run dev
 | Email | Password | Role |
 |-------|----------|------|
 | `admin@local.test` | `LocalAdmin1234` | admin |
-| `instructor@local.test` | `LocalInstructor1234` | instructor |
+| `admin2@local.test` | `LocalAdmin1234` | admin |
 | `student@local.test` | `LocalStudent1234` | student |
 
 ---
@@ -95,9 +95,9 @@ All routes are mounted at `/v1/*` (primary), `/api/*`, and root shortcuts.
 - `GET /`: Course catalog with filter parameters (`category`, `difficulty`, `search`)
 - `GET /categories`: Available course categories
 - `GET /:id`: Detailed course information including lessons and user progress
-- `POST /`: Create course (instructor/admin)
-- `PATCH /:id`: Update course (instructor/admin)
-- `DELETE /:id`: Archive course (instructor/admin)
+- `POST /`: Create course (admin)
+- `PATCH /:id`: Update course (admin)
+- `DELETE /:id`: Archive course (admin)
 - `POST /:id/enroll`: Student self-enrollment
 - `POST /:courseId/enroll/:studentId`: Admin enroll student
 - `DELETE /:courseId/enroll/:studentId`: Admin unenroll student
@@ -141,7 +141,7 @@ All routes are mounted at `/v1/*` (primary), `/api/*`, and root shortcuts.
 - `DELETE /events/:id`: Remove event
 
 ### Users (`/v1/users`)
-- `GET /`: List all users (admin/instructor)
+- `GET /`: List all users (admin)
 - `GET /:id`: User learning profile, completed lessons, enrollments, and quiz results
 - `PUT /:id/role`: Update user role (admin)
 - `PUT /:id/profile`: Update profile information (name, avatar, password)

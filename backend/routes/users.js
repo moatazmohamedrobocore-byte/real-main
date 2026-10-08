@@ -19,7 +19,7 @@ function publicUser(u) {
 }
 
 // GET / (list users)
-router.get('/', authenticate, requireRoles('instructor', 'admin'), async (_req, res, next) => {
+router.get('/', authenticate, requireRoles('admin'), async (_req, res, next) => {
   try {
     const result = await query(
       `SELECT id, name, email, role, avatar, created_at, last_login_at
@@ -225,8 +225,8 @@ router.get('/:id/learning-summary', authenticate, async (req, res, next) => {
 async function updateRoleHandler(req, res, next) {
   try {
     const { role } = req.body || {};
-    if (!['student', 'instructor', 'admin'].includes(role)) {
-      return res.status(400).json({ error: { code: 'INVALID_ROLE', message: 'Role must be student, instructor, or admin.' } });
+    if (!['student', 'admin'].includes(role)) {
+      return res.status(400).json({ error: { code: 'INVALID_ROLE', message: 'Role must be student or admin.' } });
     }
 
     const result = await query(
