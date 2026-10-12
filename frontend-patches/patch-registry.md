@@ -89,3 +89,20 @@ mismatch that a source rebuild must reconcile.** See `../docs/frontend-source-in
 - **`api-DvVeKkjb.js`** accumulated ~67 lines of hand-added wrapper functions — the single
   most divergent file from original compiler output.
 - All edits are recoverable via git; none are in any source form.
+
+---
+
+## Post-snapshot edits (after tag `frontend-compiled-snapshot-2026-10-08`)
+
+These edits were made AFTER the snapshot tag, so they are NOT captured by it. If you restore
+the tag, you lose these — re-apply from git or from this registry.
+
+| File | Change (before → after) | Why | Verified |
+|---|---|---|---|
+| `LiveMeetingPage-Co71c9DM.js` | (1) mount-effect else branch: `:(b(t.waitingForHost?…))` → `:(ve(t),b(t.waitingForHost?…))` so the `canStart` response is stored in state `S`; (2) `waiting_host` heading/paragraph gated on `S?.canStart` → "No Active Session" / "No live session is running. Start one when you are ready…"; (3) the "Check if Session Started" button wrapped in `S?.canStart ? <Start Session button> : <existing button>`. The Start button's onClick calls `ue({start:true})` (= `authorizeMeetingJoin({start:true})`) and on `authorized` runs the same `ve(t),k(…),b('authorized')` transition as the mount effect. | Clicking sidebar "Live Classes" auto-created + auto-joined a live session. Paired with backend `meetings.js` change that returns `{authorized:false, canStart:true, waitingForHost:true}` for staff with no active session and only creates one when `req.body.start===true`. | ✅ `node --check` ESM parse OK; browser click-through: sidebar → "No Active Session" + "Start Session" button, **no Jitsi auto-load**; clicking Start → Instructor/Moderator command center, session created. |
+
+**Backend counterpart** (not a bundle, but part of the same change): `backend/routes/meetings.js`
+`authorizeJoinHandler` — instant session creation now gated behind `req.body.start === true`;
+staff with no active session get `{authorized:false, canStart:true, waitingForHost:true}`.
+An already-`live` session is still reused/joined on sidebar click (expected "resume" behavior).
+

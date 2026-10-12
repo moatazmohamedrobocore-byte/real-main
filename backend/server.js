@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -31,7 +32,9 @@ import adminRoutes from './routes/admin.js';
 import dataRoutes from './routes/data.js';
 import notificationRoutes from './routes/notifications.js';
 import { startCalendarReminderScheduler } from './services/calendarNotifications.js';
+import { startMaintenanceScheduler } from './services/maintenance.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
+import { authenticate } from './middleware/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,8 +123,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// Request correlation id: honor an inbound x-request-id, else generate one.
+// Lets a single request be traced across log lines without logging bodies/secrets.
+app.use((req, res, next) => {
+  const inbound = req.headers['x-request-id'];
+  req.id = (typeof inbound === 'string' && inbound.length <= 128) ? inbound : crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.id);
+  next();
+});
+
 app.use(compression());
-app.use(morgan('dev'));
+morgan.token('rid', (req) => req.id);
+app.use(morgan(':rid :method :url :status :response-time ms - :res[content-length]'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
@@ -158,7 +171,15 @@ const generalLimiter = rateLimit({
 });
 app.use(generalLimiter);
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// AI/LLM endpoints are expensive; rate-limit them by path across all three mounts
+// (/v1, /api, bare). Covers /courses/:id/ai/*, /agent/*, /ai/*, /admin/task/*, generate-summary.
+const isAiPath = (p) =>
+  p.includes('/ai/') || p.includes('/agent/') || p.includes('/admin/task') || p.includes('generate-summary');
+app.use((req, res, next) => (isAiPath(req.path) ? aiLimiter(req, res, next) : next()));
+
+// Uploaded course materials are not public. No frontend route references /uploads
+// (materials are read server-side for RAG), so require a valid token to fetch one.
+app.use('/uploads', authenticate, express.static(path.join(__dirname, 'uploads')));
 
 // Health checks
 app.get('/health', async (_req, res) => {
@@ -183,7 +204,6 @@ function mountRouters(prefix = '') {
   app.use(prefix, eventRoutes);
   app.use(`${prefix}/users`, userRoutes);
   app.use(prefix, adminRoutes);
-  app.use(`${prefix}/ai`, aiLimiter);
   app.use(prefix, dataRoutes);
   app.use(prefix, notificationRoutes);
 }
@@ -192,6 +212,7 @@ function mountRouters(prefix = '') {
 mountRouters('/v1');
 mountRouters('/api');
 startCalendarReminderScheduler();
+startMaintenanceScheduler();
 
 // Direct /login and /register shortcuts if frontend hits them directly
 app.post('/login', authLimiter, (req, res, next) => {

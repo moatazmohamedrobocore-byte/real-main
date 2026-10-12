@@ -1,5 +1,6 @@
 -- REAL_i PostgreSQL Schema
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
 -- Users Table
 CREATE TABLE IF NOT EXISTS users (
@@ -315,6 +316,36 @@ CREATE INDEX IF NOT EXISTS idx_data_assets_course ON data_assets(course_id);
 ALTER TABLE data_assets ADD COLUMN IF NOT EXISTS chunk_count INT NOT NULL DEFAULT 0;
 ALTER TABLE data_assets ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ DEFAULT NULL;
 ALTER TABLE data_assets ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMPTZ DEFAULT NULL;
+
+-- Document chunks: the real RAG store. Each row is a slice of extracted text from a
+-- course asset, indexed for Postgres full-text search. `embedding` is reserved for the
+-- future semantic upgrade (Gemini embeddings + pgvector); it stays NULL under FTS.
+CREATE TABLE IF NOT EXISTS document_chunks (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  course_id   UUID REFERENCES courses(id) ON DELETE CASCADE,
+  asset_id    UUID REFERENCES data_assets(id) ON DELETE CASCADE,
+  chunk_index INT NOT NULL DEFAULT 0,
+  content     TEXT NOT NULL,
+  char_count  INT NOT NULL DEFAULT 0,
+  embedding   JSONB DEFAULT NULL,
+  search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce(content, ''))) STORED,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_course ON document_chunks(course_id);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_asset ON document_chunks(asset_id);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_fts ON document_chunks USING GIN (search_vector);
+CREATE INDEX IF NOT EXISTS idx_doc_chunks_trgm ON document_chunks USING GIN (content gin_trgm_ops);
+
+-- Ephemeral AI quiz answer keys, persisted so grading survives a container restart.
+-- Swept by TTL (2h) on read/write; replaces the old in-memory Map.
+CREATE TABLE IF NOT EXISTS ai_quiz_keys (
+  quiz_id    VARCHAR(64) PRIMARY KEY,
+  course_id  UUID REFERENCES courses(id) ON DELETE CASCADE,
+  topic      TEXT,
+  questions  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_quiz_keys_created ON ai_quiz_keys(created_at);
 
 -- Chat Sessions Table
 CREATE TABLE IF NOT EXISTS chat_sessions (

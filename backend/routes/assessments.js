@@ -32,7 +32,7 @@ async function lockStudentAssessmentAttempt(client, studentId, assessmentId) {
 
 function attemptLimitError(res) {
   return res.status(409).json({
-    error: { code: 'MAX_ATTEMPTS_EXCEEDED', message: 'This assessment can only be submitted once.' }
+    error: { code: 'MAX_ATTEMPTS_EXCEEDED', message: 'Attempt limit reached for this assessment.' }
   });
 }
 
@@ -261,6 +261,8 @@ async function createAssessmentHandler(req, res, next) {
     const rawCourseId = req.params.courseId || req.body.courseId || req.body.course_id;
     const courseId = normalizeCourseId(rawCourseId);
     const { title, instructions, description, type = 'quiz', status = 'draft', timeLimitSeconds = 600, randomizeQuestions = true, availableFrom, dueAt, questions = [] } = req.body || {};
+    const rawMaxAttempts = req.body?.maxAttempts ?? req.body?.max_attempts ?? req.body?.attempts ?? 1;
+    const maxAttempts = Math.min(20, Math.max(1, Number(rawMaxAttempts) || 1));
 
     if (!title?.trim()) {
       return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'Title is required.' } });
@@ -287,7 +289,7 @@ async function createAssessmentHandler(req, res, next) {
         status,
         timeLimitSeconds,
         randomizeQuestions,
-        1,
+        maxAttempts,
         availableFrom || null,
         dueAt || null,
         JSON.stringify(formattedQuestions),
@@ -680,7 +682,8 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
     try {
       await client.query('BEGIN');
       const attemptCount = await lockStudentAssessmentAttempt(client, req.user.id, a.id);
-      if (attemptCount > 0) {
+      const maxAttempts = Number(a.max_attempts || 1);
+      if (attemptCount >= maxAttempts) {
         await client.query('ROLLBACK');
         return attemptLimitError(res);
       }

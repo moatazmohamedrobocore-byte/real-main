@@ -34,7 +34,7 @@ const scopedOk = Array.isArray(asmFresh) && asmFresh.every(a => a.courseId === n
 ok('DEF-04 student assessments scoped', scopedOk, `fresh=${asmFresh?.length} all=${asmAll?.length}`);
 
 // DEF-13: create assessment with General (All Courses) -> 201, course_id null
-const gen = await fetch(`${B}/assessments`, { method: 'POST', headers: H(admin), body: JSON.stringify({ title: 'QA Global Quiz ' + Date.now(), course: 'General (All Courses)', type: 'quiz', questions: [{ prompt: '2+2?', options: ['3', '4'], correctOptionIds: [1], points: 1 }] }) });
+const gen = await fetch(`${B}/assessments`, { method: 'POST', headers: H(admin), body: JSON.stringify({ title: 'QA Global Quiz ' + Date.now(), course: 'General (All Courses)', type: 'quiz', max_attempts: 3, questions: [{ prompt: '2+2?', options: ['3', '4'], correctOptionIds: [1], points: 1 }] }) });
 const genJ = await gen.json();
 ok('DEF-13 General course accepted', gen.status === 201 && genJ.courseId === null, `status=${gen.status} courseId=${genJ.courseId}`);
 const globalQuizId = genJ.id;

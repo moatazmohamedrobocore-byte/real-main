@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { query } from '../db/pool.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 import { getAccessSecret } from '../config/secrets.js';
+import { getGroqClient, getGroqModel } from '../services/llm.js';
 
 const router = Router();
 
@@ -670,8 +671,7 @@ router.post('/meetings/:id/generate-summary', authenticate, requireRoles('admin'
     }
     const meeting = meetingRes.rows[0];
 
-    const Groq = (await import('groq-sdk')).default;
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const groq = await getGroqClient();
 
     const prompt = `You are an AI assistant analyzing a meeting titled "${meeting.title}".
 Description: ${meeting.description || 'N/A'}.
@@ -693,7 +693,7 @@ Respond ONLY with a valid JSON object exactly like this:
     let summary;
     try {
       const completion = await groq.chat.completions.create({
-        model: 'qwen/qwen3.8-27b',
+        model: getGroqModel(),
         messages: [
           { role: 'system', content: 'You are an AI assistant that summarizes meetings. Respond ONLY with valid JSON.' },
           { role: 'user', content: prompt }
@@ -704,7 +704,7 @@ Respond ONLY with a valid JSON object exactly like this:
       const rawOutput = completion.choices[0]?.message?.content || '{}';
       summary = JSON.parse(rawOutput);
     } catch (llmErr) {
-      console.error('Failed to generate summary with Groq:', llmErr);
+      console.error(`[meetings/summary ${req.id || '-'}] LLM error:`, String(llmErr.message || '').slice(0, 200));
       summary = {
         summary: 'Automated AI Summary could not be generated due to an LLM error.',
         keyTakeaways: ['Check API keys', 'Ensure network connectivity'],

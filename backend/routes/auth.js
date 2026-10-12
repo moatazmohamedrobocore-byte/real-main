@@ -295,7 +295,7 @@ router.post('/forgot-password', async (req, res, next) => {
           subject: 'Password Reset OTP',
           text: `Your OTP for password reset is: ${otp}. It expires in 15 minutes.`
         });
-        console.log(`[Email Sent] OTP for ${trimmedEmail} was sent successfully.`);
+        console.log('[Email Sent] password-reset OTP delivered.');
       } catch (mailErr) {
         console.error('Email send failed (OTP still stored):', mailErr.message);
       }

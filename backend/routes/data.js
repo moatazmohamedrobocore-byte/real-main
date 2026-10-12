@@ -2,6 +2,9 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import { query } from '../db/pool.js';
 import { authenticate, requireRoles, allowAnonymous } from '../middleware/auth.js';
+import { getGroqClient, getGroqModel } from '../services/llm.js';
+import { indexCourseAssets } from '../services/indexer.js';
+import { retrieveChunks, formatContext } from '../services/retrieve.js';
 
 const router = Router();
 
@@ -10,15 +13,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // only real UUIDs may hit UUID-typed columns.
 const safeCourseId = (value) => (typeof value === 'string' && UUID_RE.test(value) ? value : null);
 
-// Ephemeral server-side store of AI-quiz answer keys, keyed by quiz id. The key is
-// never sent to the browser; the client submits answers and gets back a score.
-const aiQuizKeys = new Map();
-const AI_QUIZ_TTL_MS = 2 * 60 * 60 * 1000;
-function pruneAiQuizKeys() {
-  const cutoff = Date.now() - AI_QUIZ_TTL_MS;
-  for (const [k, v] of aiQuizKeys) {
-    if (v.createdAt < cutoff) aiQuizKeys.delete(k);
-  }
+// AI-quiz answer keys are persisted in Postgres (ai_quiz_keys) so grading survives a
+// container restart. The key is never sent to the browser; the client submits answers
+// and gets back a score. Rows are swept after a 2-hour TTL.
+const AI_QUIZ_TTL_HOURS = 2;
+async function sweepAiQuizKeys() {
+  try {
+    await query(`DELETE FROM ai_quiz_keys WHERE created_at < now() - make_interval(hours => $1)`, [AI_QUIZ_TTL_HOURS]);
+  } catch { /* best-effort cleanup */ }
 }
 
 // GET /data/projects (matches frontend getProjects())
@@ -210,11 +212,12 @@ async function uploadHandler(req, res, next) {
       originalName = sanitizeOriginalName(req.file.originalname);
     }
 
+    const ext = (originalName.match(/\.[^.]+$/) || ['.pdf'])[0].slice(1).toLowerCase();
     const result = await query(
-      `INSERT INTO data_assets (course_id, asset_name, asset_type, asset_size, uploaded_by)
-       VALUES ($1, $2, 'pdf', $3, $4)
+      `INSERT INTO data_assets (course_id, asset_name, asset_type, asset_size, file_path, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [courseId, originalName, assetSize, req.user?.id || null]
+      [courseId, originalName, ext || 'file', assetSize, filename, req.user?.id || null]
     );
 
     res.status(200).json({
@@ -232,31 +235,23 @@ router.post('/upload', authenticate, upload.single('file'), uploadHandler);
 router.post('/data/upload/:fileOrId', authenticate, upload.single('file'), uploadHandler);
 
 // POST /data/process/:courseId and POST /courses/:courseId/ai/materials
-// Reports real counts derived from the course's stored assets. Zero files => zero work.
+// Really extracts text from each uploaded asset, chunks it, and stores it in
+// document_chunks for full-text retrieval. Idempotent (re-indexing replaces old chunks).
 async function processFilesHandler(req, res, next) {
   try {
     const courseId = safeCourseId(req.params.courseId);
-    const rows = courseId
-      ? (await query(
-          'SELECT id, asset_size FROM data_assets WHERE course_id = $1',
-          [courseId]
-        )).rows
-      : [];
-    const processedFiles = rows.length;
-    // ~1 chunk per 1.5 KB of source text; a file always yields at least one chunk.
-    const insertedChunks = rows.reduce((sum, r) => sum + Math.max(1, Math.round(Number(r.asset_size || 0) / 1500)), 0);
-
-    if (processedFiles > 0 && courseId) {
-      await query('UPDATE data_assets SET processed_at = now() WHERE course_id = $1', [courseId]);
+    if (!courseId) {
+      return res.status(400).json({ error: { code: 'INVALID_COURSE', message: 'A valid course id is required to process materials.' } });
     }
-
+    const { processedFiles, insertedChunks, skipped } = await indexCourseAssets(courseId);
     res.json({
       success: true,
       processed_files: processedFiles,
       inserted_chunks: insertedChunks,
+      skipped,
       message: processedFiles > 0
-        ? `Processed ${processedFiles} file(s), ${insertedChunks} chunk(s) for RAG indexing.`
-        : 'No files selected for this course; nothing was processed.'
+        ? `Indexed ${processedFiles} file(s) into ${insertedChunks} retrievable chunk(s).`
+        : 'No indexable files for this course (none uploaded, or unsupported/unreadable).'
     });
   } catch (err) {
     next(err);
@@ -265,18 +260,15 @@ async function processFilesHandler(req, res, next) {
 router.post('/data/process/:courseId', authenticate, processFilesHandler);
 router.post('/courses/:courseId/ai/materials', authenticate, processFilesHandler);
 
-// POST /nlp/index/push/:id — reports the real number of chunks indexed for the course.
+// POST /nlp/index/push/:id — indexes the course's assets and reports the real chunk count.
 router.post('/nlp/index/push/:id', authenticate, async (req, res, next) => {
   try {
     const courseId = safeCourseId(req.params.id);
-    const rows = courseId
-      ? (await query('SELECT asset_size FROM data_assets WHERE course_id = $1', [courseId])).rows
-      : [];
-    const inserted = rows.reduce((sum, r) => sum + Math.max(1, Math.round(Number(r.asset_size || 0) / 1500)), 0);
-    if (inserted > 0 && courseId) {
-      await query('UPDATE data_assets SET indexed_at = now() WHERE course_id = $1', [courseId]);
+    if (!courseId) {
+      return res.status(400).json({ error: { code: 'INVALID_COURSE', message: 'A valid course id is required.' } });
     }
-    res.json({ success: true, inserted_items_count: inserted });
+    const { insertedChunks } = await indexCourseAssets(courseId);
+    res.json({ success: true, inserted_items_count: insertedChunks });
   } catch (err) {
     next(err);
   }
@@ -314,12 +306,14 @@ async function chatHandler(req, res, next) {
       if (courseRes.rows.length > 0) {
         courseContext = `\nThe student is currently enrolled in the course: "${courseRes.rows[0].title}". Course description: ${courseRes.rows[0].description || 'N/A'}.`;
       }
+      // RAG: ground the tutor in the course's indexed materials (FTS over document_chunks).
+      const chunks = await retrieveChunks(courseId, message, { k: 5 });
+      courseContext += formatContext(chunks);
     }
 
     let botReply;
     try {
-      const Groq = (await import('groq-sdk')).default;
-      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const groq = await getGroqClient();
 
       const messages = [
         {
@@ -330,7 +324,7 @@ async function chatHandler(req, res, next) {
       ];
 
       const completion = await groq.chat.completions.create({
-        model: 'qwen/qwen3.8-27b',
+        model: getGroqModel(),
         messages,
         temperature: 0.7,
         max_tokens: 800,
@@ -339,7 +333,7 @@ async function chatHandler(req, res, next) {
 
       botReply = completion.choices[0]?.message?.content || 'I apologize, I could not generate a response. Please try again.';
     } catch (llmErr) {
-      console.error('Groq LLM error:', llmErr.message);
+      console.error(`[ai/chat ${req.id || '-'}] LLM error:`, String(llmErr.message || '').slice(0, 200));
       const errMsg = (llmErr.message || '').toLowerCase();
       if (llmErr.status === 429 || errMsg.includes('429') || errMsg.includes('token') || errMsg.includes('rate_limit')) {
         botReply = "we are out of service right now";
@@ -391,10 +385,12 @@ async function generateQuizHandler(req, res, next) {
       if (courseRes.rows.length > 0) {
         courseContext = `\nContext: This quiz is for the course "${courseRes.rows[0].title}". ${courseRes.rows[0].description || ''}`;
       }
+      // RAG: draw questions from the course's indexed materials when available.
+      const chunks = await retrieveChunks(courseId, topic, { k: 6 });
+      courseContext += formatContext(chunks);
     }
 
-    const Groq = (await import('groq-sdk')).default;
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const groq = await getGroqClient();
 
     const prompt = `Generate a multiple choice quiz about "${topic}". Create exactly ${numQ} questions.${courseContext}
 Respond ONLY with a valid JSON object of the form {"questions": [...]}, where each item has this exact structure:
@@ -409,7 +405,7 @@ Respond ONLY with a valid JSON object of the form {"questions": [...]}, where ea
 correctIndex is the 0-based integer index of the correct option. IMPORTANT: Randomize the correctIndex for each question so that the correct answer is NOT always the first option! Do not include comments or extra keys.`;
 
     const completion = await groq.chat.completions.create({
-      model: 'qwen/qwen3.8-27b',
+      model: getGroqModel(),
       messages: [
         { role: 'system', content: 'You are an expert exam writer. Respond ONLY with valid JSON.' },
         { role: 'user', content: prompt }
@@ -444,7 +440,7 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
         };
       });
     } catch (parseErr) {
-      console.error('Failed to parse Groq quiz output:', parseErr);
+      console.error('[ai/quiz] failed to parse model output:', String(parseErr.message || '').slice(0, 200));
       throw new Error('Failed to generate valid quiz format');
     }
 
@@ -458,20 +454,19 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
       options: q.options
     }));
 
-    // Keep the answer key in an ephemeral server-side store, keyed by a quiz id the
-    // client can submit against. It is never returned to the browser.
+    // Persist the answer key server-side (never returned to the browser) so grading
+    // survives a restart. Swept after the TTL.
     const quizId = `aiq-${crypto.randomUUID().slice(0, 8)}`;
-    aiQuizKeys.set(quizId, {
-      createdAt: Date.now(),
-      courseId,
-      topic,
-      questions: quizQuestions.map((q) => ({
+    await query(
+      `INSERT INTO ai_quiz_keys (quiz_id, course_id, topic, questions)
+       VALUES ($1, $2, $3, $4)`,
+      [quizId, courseId, topic, JSON.stringify(quizQuestions.map((q) => ({
         id: q.id,
         correctIndex: q.correctIndex,
         explanation: q.explanation || ''
-      }))
-    });
-    pruneAiQuizKeys();
+      })))]
+    );
+    sweepAiQuizKeys();
 
     res.status(201).json({
       success: true,
@@ -496,10 +491,15 @@ router.post('/agent/quiz/:courseId', authenticate, generateQuizHandler);
 // score without ever exposing the answer key to the client.
 router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) => {
   try {
-    const entry = aiQuizKeys.get(req.params.quizId);
-    if (!entry) {
+    const keyRes = await query(
+      `SELECT questions FROM ai_quiz_keys
+       WHERE quiz_id = $1 AND created_at >= now() - make_interval(hours => $2)`,
+      [req.params.quizId, AI_QUIZ_TTL_HOURS]
+    );
+    if (keyRes.rows.length === 0) {
       return res.status(404).json({ error: { code: 'QUIZ_NOT_FOUND', message: 'Quiz expired or not found; please generate a new one.' } });
     }
+    const entry = { questions: keyRes.rows[0].questions };
     const raw = (req.body && req.body.answers) || {};
     const pick = (id) => (Array.isArray(raw) ? (raw.find((a) => (a.questionId || a.id) === id) || {}).value : raw[id]);
 
@@ -624,10 +624,9 @@ router.post('/admin/task/create', authenticate, requireRoles('admin'), async (re
 
     let answer;
     try {
-      const Groq = (await import('groq-sdk')).default;
-      const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+      const groq = await getGroqClient();
       const completion = await groq.chat.completions.create({
-        model: 'qwen/qwen3.8-27b',
+        model: getGroqModel(),
         messages: [
           {
             role: 'system',

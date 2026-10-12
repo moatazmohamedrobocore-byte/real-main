@@ -8,7 +8,9 @@ export function notFound(req, res) {
 }
 
 export function errorHandler(err, req, res, _next) {
-  console.error(`[Error] ${req.method} ${req.path}:`, err);
+  const rid = req.id || '-';
+  // Log server-side with the request id; never log request bodies/headers (may hold secrets).
+  console.error(`[Error ${rid}] ${req.method} ${req.path}: ${err.message}`, err.stack ? `\n${err.stack}` : '');
 
   let status = err.status || err.statusCode || 500;
   let code = err.code || 'INTERNAL_SERVER_ERROR';
@@ -35,11 +37,17 @@ export function errorHandler(err, req, res, _next) {
     message = 'Invalid identifier syntax.';
   }
 
+  // Do not leak internal error text to clients on 5xx unless explicitly marked safe.
+  const knownSafe = status < 500 || err.expose === true || ['DUPLICATE_RECORD', 'FOREIGN_KEY_VIOLATION', 'INVALID_SYNTAX'].includes(code);
+  const clientMessage = knownSafe ? message : 'An internal server error occurred.';
+  const clientCode = knownSafe ? code : 'INTERNAL_SERVER_ERROR';
+
   res.status(status).json({
     error: {
-      code,
-      message
+      code: clientCode,
+      message: clientMessage
     },
-    message // backwards compat
+    message: clientMessage, // backwards compat
+    requestId: rid
   });
 }
