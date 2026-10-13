@@ -46,33 +46,57 @@ test('F-03: student quiz payload omits answer key; unenrolled blocked; admin see
   assert.ok(adm.body[0].questions[0].correctOptionIds, 'admin/instructor may see the answer key');
 });
 
-test('F-06: quiz results are bound to the authenticated user; client student_id ignored; score clamped', async () => {
+// A server-graded AI quiz owned by `user` (what POST /ai/quizzes/:id/grade leaves behind).
+async function seedGradedQuiz(user, { correct, total }) {
+  const quizId = `aiq-test-${Math.random().toString(36).slice(2, 10)}`;
+  const result = { success: true, quizId, correct, total, score: Math.round((correct / total) * 100), detail: [] };
+  await db().query(
+    `INSERT INTO ai_quiz_keys (quiz_id, topic, questions, user_id, graded_at, graded_result)
+     VALUES ($1, 'test', '[]'::jsonb, $2, now(), $3)`,
+    [quizId, user.id, JSON.stringify(result)]
+  );
+  return quizId;
+}
+
+test('F-06: quiz results are server-derived; client student_id and score are ignored', async () => {
   const victim = await makeUser('student');
   const attacker = await makeUser('student');
 
-  // attacker tries to record a score for the victim, and inflate beyond total
-  const res = await api('/agent/quizzes/results', {
+  // No server-graded quiz => nothing to record, whatever score the client claims.
+  const none = await api('/agent/quizzes/results', {
     method: 'POST', token: attacker.token,
     body: { student_id: victim.id, task_id: 'forgery', score: 999, total: 5 }
   });
-  assert.equal(res.status, 200, `results post: ${res.status}`);
+  assert.equal(none.status, 409, `results without a graded quiz: ${none.status}`);
+  assert.equal((await db().query('SELECT 1 FROM quiz_results WHERE task_id = $1', ['forgery'])).rows.length, 0);
 
-  // DB truth: the row belongs to the ATTACKER (req.user.id), not the victim, and score is clamped to total
+  // With a genuinely graded quiz (2/5) the stored score is the SERVER's, not the claimed one.
+  await seedGradedQuiz(attacker, { correct: 2, total: 5 });
+  const ok = await api('/agent/quizzes/results', {
+    method: 'POST', token: attacker.token,
+    body: { student_id: victim.id, task_id: 'forgery', score: 999, total: 1000 }
+  });
+  assert.equal(ok.status, 200, `results post: ${ok.status}`);
   const rows = (await db().query('SELECT student_id, score, total FROM quiz_results WHERE task_id = $1', ['forgery'])).rows;
   assert.equal(rows.length, 1);
-  assert.equal(String(rows[0].student_id), String(attacker.id), 'F-06: score must be recorded for the caller, not the forged student_id');
-  assert.equal(Number(rows[0].score), 5, 'F-06: score must be clamped to total (no inflation above max)');
+  assert.equal(String(rows[0].student_id), String(attacker.id), 'recorded for the caller, not the forged student_id');
+  assert.equal(Number(rows[0].score), 2, 'score comes from the server-graded quiz, not the client');
+  assert.equal(Number(rows[0].total), 5, 'total comes from the server-graded quiz');
 
-  // victim's completed list must NOT contain the forged task
+  // One graded quiz can be claimed by one task only: no replaying a good result across tasks.
+  const replay = await api('/agent/quizzes/results', { method: 'POST', token: attacker.token, body: { task_id: 'second-task', score: 5, total: 5 } });
+  assert.equal(replay.status, 409, 'a graded quiz cannot be reused for a second task');
+
   const victimCompleted = await api(`/agent/quizzes/completed/${victim.id}`, { token: victim.token });
-  assert.ok(!victimCompleted.body.completed_tasks.some((t) => t.task_id === 'forgery'), 'F-06: victim must not show the forged result');
+  assert.ok(!victimCompleted.body.completed_tasks.some((t) => t.task_id === 'forgery'), 'victim must not show the forged result');
 });
 
 test('F-05: completed-quizzes endpoint is scoped to the caller (no cross-user read)', async () => {
   const a = await makeUser('student');
   const b = await makeUser('student');
-  // give B a real result
-  await api('/agent/quizzes/results', { method: 'POST', token: b.token, body: { task_id: 'b-private', score: 4, total: 5 } });
+  await seedGradedQuiz(b, { correct: 4, total: 5 });
+  const post = await api('/agent/quizzes/results', { method: 'POST', token: b.token, body: { task_id: 'b-private' } });
+  assert.equal(post.status, 200);
 
   // A asks for B's id -> must get A's own (empty), never B's private result
   const aSeesB = await api(`/agent/quizzes/completed/${b.id}`, { token: a.token });

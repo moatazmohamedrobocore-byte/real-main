@@ -81,6 +81,14 @@ function normalizeAssessmentResponses(questions, responses) {
   });
 }
 
+// Student-facing view of a submissions row: never expose the frozen question snapshot,
+// which contains the answer key (correctOptionIds).
+function publicSubmission(row) {
+  if (!row) return row;
+  const { question_snapshot, ...rest } = row;
+  return rest;
+}
+
 function formatAssessment(a) {
   const questions = normalizeAssessmentQuestions(typeof a.questions === 'string' ? JSON.parse(a.questions) : (a.questions || []));
   return {
@@ -180,12 +188,15 @@ router.get('/assessments/student/me', authenticate, async (req, res, next) => {
        ORDER BY COALESCE(s.submitted_at, s.started_at, s.created_at) DESC`,
       [req.user.id]
     );
-    res.json(result.rows.map((row) => ({
+    // F-03: question_snapshot / assessment_questions carry the answer key (correctOptionIds).
+    // Students must never receive them, in-progress or after submission, so they are
+    // used only to compute total_marks and are then dropped from the payload.
+    res.json(result.rows.map(({ question_snapshot, assessment_questions, ...row }) => ({
       ...row,
       id: String(row.id),
       assessment_id: row.assessment_id ? String(row.assessment_id) : null,
       score: row.grading_score === null ? null : Number(row.grading_score),
-      total_marks: (row.question_snapshot || row.assessment_questions || []).reduce((sum, question) => sum + Number(question.points || question.marks || 1), 0) || null,
+      total_marks: (question_snapshot || assessment_questions || []).reduce((sum, question) => sum + Number(question.points || question.marks || 1), 0) || null,
       status: row.grading_status === 'graded' ? 'graded' : row.attempt_status,
       files: (row.files || []).map((file) => ({ ...file, id: String(file.id) }))
     })));
@@ -581,7 +592,7 @@ router.post('/attempts/:submissionId/submit', authenticate, async (req, res, nex
 
     res.json({
       success: true,
-      submission: result.rows[0],
+      submission: publicSubmission(result.rows[0]),
       score: gradingScore,
       maxScore: grade.possible
     });
@@ -702,7 +713,7 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
           );
         }
         await client.query('COMMIT');
-        return res.json({ success: true, submission: result.rows[0], score: grade.answered ? grade.percentage : null });
+        return res.json({ success: true, submission: publicSubmission(result.rows[0]), score: grade.answered ? grade.percentage : null });
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -742,7 +753,7 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
         );
       }
       await client.query('COMMIT');
-      res.json({ success: true, submission, score: gradingScore });
+      res.json({ success: true, submission: publicSubmission(submission), score: gradingScore });
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
