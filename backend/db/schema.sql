@@ -129,12 +129,12 @@ CREATE TABLE IF NOT EXISTS submissions (
   responses            JSONB NOT NULL DEFAULT '[]'::jsonb,
   started_at           TIMESTAMPTZ DEFAULT NULL,
   expires_at           TIMESTAMPTZ DEFAULT NULL,
-  attempt_status       VARCHAR(35) NOT NULL DEFAULT 'submitted' CHECK (attempt_status IN ('in_progress', 'submitted', 'timed_out', 'finalized_due_date', 'finalized_eligibility_lost')),
+  attempt_status       VARCHAR(35) NOT NULL DEFAULT 'in_progress' CHECK (attempt_status IN ('in_progress', 'submitted', 'timed_out', 'finalized_due_date', 'finalized_eligibility_lost')),
   expiration_reason    VARCHAR(20) DEFAULT NULL CHECK (expiration_reason IN ('time_limit', 'due_date') OR expiration_reason IS NULL),
   finalization_reason  VARCHAR(20) DEFAULT NULL CHECK (finalization_reason IN ('manual_submit', 'timeout', 'due_date', 'eligibility_lost') OR finalization_reason IS NULL),
   question_order       JSONB DEFAULT '[]'::jsonb,
   question_snapshot    JSONB DEFAULT NULL,
-  submitted_at         TIMESTAMPTZ DEFAULT now(),
+  submitted_at         TIMESTAMPTZ DEFAULT NULL,
   grading_status       VARCHAR(20) DEFAULT 'pending' CHECK (grading_status IN ('pending', 'auto_graded', 'manual_review', 'graded')),
   grading_score        NUMERIC(5,2) DEFAULT NULL,
   grading_feedback     TEXT DEFAULT NULL,
@@ -150,6 +150,13 @@ CREATE INDEX IF NOT EXISTS idx_submission_student ON submissions(student_id, cou
 ALTER TABLE submissions ALTER COLUMN course_id DROP NOT NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS grading_comments TEXT DEFAULT NULL;
 ALTER TABLE submissions ADD COLUMN IF NOT EXISTS grading_suggestions TEXT DEFAULT NULL;
+-- F-01: a newly started attempt must NOT look already-submitted. Fix the defaults on
+-- existing databases (CREATE TABLE IF NOT EXISTS does not alter an existing table).
+ALTER TABLE submissions ALTER COLUMN attempt_status SET DEFAULT 'in_progress';
+ALTER TABLE submissions ALTER COLUMN submitted_at DROP DEFAULT;
+-- Safe data repair: an in_progress attempt should never carry a submitted_at timestamp.
+-- Only touches contradictory rows; valid historical submissions are left intact.
+UPDATE submissions SET submitted_at = NULL WHERE attempt_status = 'in_progress' AND submitted_at IS NOT NULL;
 
 -- Assignment uploads are stored as PostgreSQL BYTEA values, linked to the submission.
 CREATE TABLE IF NOT EXISTS assessment_submission_files (

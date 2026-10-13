@@ -86,6 +86,9 @@ async function listCourses(req, res, next) {
       WHERE c.status != 'archived'
     `;
     const params = [];
+    const isStaff = !!req.user && (req.user.role === 'admin' || req.user.role === 'instructor');
+    // F-02: the public catalog lists only published courses; drafts are staff-only.
+    if (!isStaff) sql += ` AND c.status = 'published'`;
 
     if (category) {
       params.push(category);
@@ -118,7 +121,11 @@ async function listCourses(req, res, next) {
     const formatted = result.rows.map((row) => {
       const enrollment = userEnrollments.find((e) => String(e.course_id) === String(row.id));
       const userCompleted = completedLessons.filter((p) => String(p.course_id) === String(row.id)).map((p) => String(p.lesson_id));
-      return formatCourse(row, row.lessons || [], enrollment, userCompleted);
+      const fc = formatCourse(row, row.lessons || [], enrollment, userCompleted);
+      // F-02: never ship full lesson bodies in the catalog unless the caller may access them.
+      const canSeeContent = isStaff || (enrollment && enrollment.status === 'enrolled');
+      if (!canSeeContent) fc.lessons = fc.lessons.map((l) => { const { content, ...rest } = l; return rest; });
+      return fc;
     });
 
     res.json(formatted);
@@ -360,11 +367,39 @@ router.post('/:courseId/lessons', authenticate, requireRoles('admin'), async (re
 // GET /:courseId/lessons/:lessonId
 router.get('/:courseId/lessons/:lessonId', authenticateOptional, async (req, res, next) => {
   try {
-    const result = await query('SELECT * FROM lessons WHERE id = $1 AND course_id = $2', [req.params.lessonId, req.params.courseId]);
+    const result = await query(
+      `SELECT l.*, c.status AS course_status
+       FROM lessons l JOIN courses c ON c.id = l.course_id
+       WHERE l.id = $1 AND l.course_id = $2`,
+      [req.params.lessonId, req.params.courseId]
+    );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found.' } });
     }
-    res.json(result.rows[0]);
+    const lesson = result.rows[0];
+    const isStaff = !!req.user && (req.user.role === 'admin' || req.user.role === 'instructor');
+
+    // F-02: unpublished course or lesson is invisible to non-staff (404, no existence leak).
+    if (!isStaff && (lesson.course_status !== 'published' || lesson.status !== 'published')) {
+      return res.status(404).json({ error: { code: 'LESSON_NOT_FOUND', message: 'Lesson not found.' } });
+    }
+
+    let enrolled = false;
+    if (req.user) {
+      const enr = await query(
+        "SELECT 1 FROM enrollments WHERE student_id = $1 AND course_id = $2 AND status IN ('enrolled','completed')",
+        [req.user.id, lesson.course_id]
+      );
+      enrolled = enr.rows.length > 0;
+    }
+    // Free preview limited to the first lesson (matches the catalog's is_preview convention).
+    const isPreview = Number(lesson.position) === 1;
+    if (!isStaff && !enrolled && !isPreview) {
+      return res.status(403).json({ error: { code: 'ENROLLMENT_REQUIRED', message: 'Enroll in this course to access this lesson.' } });
+    }
+
+    const { course_status, ...publicLesson } = lesson;
+    res.json(publicLesson);
   } catch (err) {
     next(err);
   }

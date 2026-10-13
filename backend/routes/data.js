@@ -365,7 +365,16 @@ router.post('/agent/chat/:courseId', authenticate, chatHandler);
 // DELETE /agent/session/:id
 router.delete('/agent/session/:id', authenticate, async (req, res, next) => {
   try {
-    await query('DELETE FROM chat_sessions WHERE id = $1', [req.params.id]);
+    // F-07: ownership-checked deletion. Admins may delete any; users only their own.
+    // A missing OR not-owned session both return the same 404 so existence isn't leaked.
+    const isAdmin = req.user.role === 'admin';
+    const result = await query(
+      'DELETE FROM chat_sessions WHERE id = $1 AND (user_id = $2 OR $3)',
+      [req.params.id, req.user.id, isAdmin]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' } });
+    }
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -541,11 +550,39 @@ router.get('/agent/guidelines/active/:id', authenticate, async (req, res, next) 
 // GET /agent/quizzes/:id
 router.get('/agent/quizzes/:id', authenticate, async (req, res, next) => {
   try {
+    const courseId = safeCourseId(req.params.id);
+    if (!courseId) {
+      return res.status(400).json({ error: { code: 'INVALID_COURSE', message: 'Invalid course id.' } });
+    }
+    const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+    // F-04: students must be enrolled to read a course's quizzes.
+    if (!isStaff) {
+      const enr = await query(
+        "SELECT 1 FROM enrollments WHERE student_id = $1 AND course_id = $2 AND status IN ('enrolled','completed')",
+        [req.user.id, courseId]
+      );
+      if (enr.rows.length === 0) {
+        return res.status(403).json({ error: { code: 'ENROLLMENT_REQUIRED', message: 'Enroll in this course to access its quizzes.' } });
+      }
+    }
     const result = await query(
-      'SELECT id, title, time_limit_seconds, questions FROM assessments WHERE course_id = $1 AND status = \'published\'',
-      [req.params.id]
+      "SELECT id, title, time_limit_seconds, questions FROM assessments WHERE course_id = $1 AND status = 'published'",
+      [courseId]
     );
-    res.json(result.rows);
+    // F-03: never expose answer keys / grading metadata to students. Staff get the full bank.
+    const publicQuestion = (q) => ({
+      id: q.id,
+      type: q.type || 'mcq',
+      prompt: q.prompt || q.text || q.question,
+      options: q.options,
+      points: q.points
+    });
+    res.json(result.rows.map((a) => ({
+      id: String(a.id),
+      title: a.title,
+      time_limit_seconds: a.time_limit_seconds,
+      questions: (typeof a.questions === 'string' ? JSON.parse(a.questions) : (a.questions || [])).map(isStaff ? (q) => q : publicQuestion)
+    })));
   } catch (err) {
     next(err);
   }
@@ -554,8 +591,15 @@ router.get('/agent/quizzes/:id', authenticate, async (req, res, next) => {
 // POST /agent/quizzes/results
 router.post('/agent/quizzes/results', authenticate, async (req, res, next) => {
   try {
-    const { student_id, task_id, score, total, answers } = req.body || {};
-    const studentId = student_id || req.user.id;
+    const { task_id, score, total, answers } = req.body || {};
+    // F-06: identity is always the authenticated user; a client-supplied student_id is ignored
+    // so nobody can record or inflate another student's score. Authoritative grading for AI
+    // quizzes happens server-side in POST /ai/quizzes/:quizId/grade; this only tracks completion.
+    const studentId = req.user.id;
+    const t = Number.isFinite(Number(total)) && Number(total) > 0 ? Math.min(1000, Math.floor(Number(total))) : 5;
+    let s = Number(score);
+    if (!Number.isFinite(s)) s = 0;
+    s = Math.max(0, Math.min(t, Math.round(s))); // clamp 0..total; never exceed the configured max
 
     const result = await query(
       `INSERT INTO quiz_results (student_id, task_id, score, total, answers)
@@ -563,7 +607,7 @@ router.post('/agent/quizzes/results', authenticate, async (req, res, next) => {
        ON CONFLICT (student_id, task_id)
        DO UPDATE SET score = EXCLUDED.score, total = EXCLUDED.total, answers = EXCLUDED.answers
        RETURNING *`,
-      [studentId, task_id || 'general-task', score || 0, total || 5, JSON.stringify(answers || {})]
+      [studentId, String(task_id || 'general-task').slice(0, 200), s, t, JSON.stringify(answers || {})]
     );
 
     res.json({ success: true, result: result.rows[0] });
@@ -575,9 +619,12 @@ router.post('/agent/quizzes/results', authenticate, async (req, res, next) => {
 // GET /agent/quizzes/completed/:id
 router.get('/agent/quizzes/completed/:id', authenticate, async (req, res, next) => {
   try {
+    // F-05: scope to the caller. Staff may query a specific student; everyone else only themselves.
+    const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+    const studentId = isStaff && UUID_RE.test(String(req.params.id)) ? String(req.params.id) : req.user.id;
     const results = await query(
       'SELECT task_id, score FROM quiz_results WHERE student_id = $1',
-      [req.params.id]
+      [studentId]
     );
     res.json({ completed_tasks: results.rows.map((r) => ({ task_id: r.task_id, score: r.score })) });
   } catch (err) {

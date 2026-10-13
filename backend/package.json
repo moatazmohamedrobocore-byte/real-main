@@ -9,7 +9,8 @@
     "dev": "nodemon server.js",
     "migrate": "node db/migrate.js",
     "seed": "node db/seed.js",
-    "setup-pg": "node db/setup-local-pg.js"
+    "setup-pg": "node db/setup-local-pg.js",
+    "test:integration": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

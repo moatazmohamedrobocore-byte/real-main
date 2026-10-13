@@ -393,6 +393,22 @@ router.post('/assessments/:id/start', authenticate, async (req, res, next) => {
     const a = assessRes.rows[0];
     const now = new Date();
 
+    // F-04: the assessment must be published, and students must be enrolled in its course.
+    // Staff (admin/instructor) may start regardless. Never trust client-supplied course/role.
+    const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+    if (!isStaff && a.status !== 'published') {
+      return res.status(404).json({ error: { code: 'ASSESSMENT_NOT_FOUND', message: 'Assessment not found.' } });
+    }
+    if (!isStaff && a.course_id) {
+      const enr = await query(
+        "SELECT 1 FROM enrollments WHERE student_id = $1 AND course_id = $2 AND status IN ('enrolled','completed')",
+        [req.user.id, a.course_id]
+      );
+      if (enr.rows.length === 0) {
+        return res.status(403).json({ error: { code: 'ENROLLMENT_REQUIRED', message: 'Enroll in this course before starting the assessment.' } });
+      }
+    }
+
     // 1. Check due_at FIRST before max_attempts
     if (a.due_at && now > new Date(a.due_at)) {
       return res.status(400).json({
@@ -475,7 +491,12 @@ router.post('/assessments/:id/start', authenticate, async (req, res, next) => {
 // GET /attempts/:submissionId
 router.get('/attempts/:submissionId', authenticate, async (req, res, next) => {
   try {
-    const result = await query('SELECT * FROM submissions WHERE id = $1', [req.params.submissionId]);
+    // F-05: scope to the owner; staff may view any. Non-owners get 404 (no existence leak).
+    const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+    const result = await query(
+      'SELECT * FROM submissions WHERE id = $1 AND ($2 OR student_id = $3)',
+      [req.params.submissionId, isStaff, req.user.id]
+    );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { code: 'ATTEMPT_NOT_FOUND', message: 'Attempt not found.' } });
     }
@@ -540,14 +561,18 @@ router.post('/attempts/:submissionId/submit', authenticate, async (req, res, nex
     const gradingStatus = !hasContent ? 'pending' : (isAutoGradable ? 'auto_graded' : 'manual_review');
     const gradingScore = hasContent && isAutoGradable ? grade.percentage : null;
 
+    // Compute graded_at in JS and use each parameter exactly once with an explicit cast.
+    // Reusing $2 in both an assignment and a CASE comparison made Postgres fail with
+    // "inconsistent types deduced for parameter $2" (F-01).
+    const gradedAt = gradingStatus === 'auto_graded' ? new Date() : null;
     const result = await query(
       `UPDATE submissions
-       SET responses = $1, attempt_status = 'submitted', submitted_at = now(),
-           grading_status = $2, grading_score = $3,
-           graded_at = CASE WHEN $2 = 'auto_graded' THEN now() ELSE graded_at END, updated_at = now()
-       WHERE id = $4 AND student_id = $5 AND attempt_status = 'in_progress' AND submitted_at IS NULL
+       SET responses = $1::jsonb, attempt_status = 'submitted', submitted_at = now(),
+           grading_status = $2::text, grading_score = $3::numeric,
+           graded_at = COALESCE($4::timestamptz, graded_at), updated_at = now()
+       WHERE id = $5 AND student_id = $6 AND attempt_status = 'in_progress' AND submitted_at IS NULL
        RETURNING *`,
-      [JSON.stringify(incoming), gradingStatus, gradingScore, sub.id, req.user.id]
+      [JSON.stringify(incoming), gradingStatus, gradingScore, gradedAt, sub.id, req.user.id]
     );
 
     if (result.rows.length === 0) {
@@ -614,6 +639,21 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
     const provided = normalizeAssessmentResponses(questions, rawProvided);
     const uploadedFiles = req.files || [];
 
+    // F-04: same publication + enrollment rules as the start flow; never trust client course/role.
+    const isStaff = req.user.role === 'admin' || req.user.role === 'instructor';
+    if (!isStaff && a.status !== 'published') {
+      return res.status(404).json({ error: { code: 'ASSESSMENT_NOT_FOUND', message: 'Assessment not found.' } });
+    }
+    if (!isStaff && a.course_id) {
+      const enr = await query(
+        "SELECT 1 FROM enrollments WHERE student_id = $1 AND course_id = $2 AND status IN ('enrolled','completed')",
+        [req.user.id, a.course_id]
+      );
+      if (enr.rows.length === 0) {
+        return res.status(403).json({ error: { code: 'ENROLLMENT_REQUIRED', message: 'Enroll in this course before submitting.' } });
+      }
+    }
+
     if (['assignment', 'task'].includes(a.type) && uploadedFiles.length === 0) {
       return res.status(400).json({ error: { code: 'FILE_REQUIRED', message: 'Upload at least one assignment file before submitting.' } });
     }
@@ -644,8 +684,8 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
         const grade = gradeResponses(snapshot, merged);
         const result = await client.query(
           `UPDATE submissions
-           SET responses = $1, attempt_status = 'submitted', submitted_at = now(),
-               grading_status = $2, grading_score = $3, graded_at = now(), updated_at = now()
+           SET responses = $1::jsonb, attempt_status = 'submitted', submitted_at = now(),
+               grading_status = $2::text, grading_score = $3::numeric, graded_at = now(), updated_at = now()
            WHERE id = $4 AND attempt_status = 'in_progress' AND submitted_at IS NULL
            RETURNING *`,
           [JSON.stringify(merged), grade.answered ? 'auto_graded' : 'pending', grade.answered ? grade.percentage : null, sub.id]
