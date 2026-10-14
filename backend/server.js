@@ -185,11 +185,24 @@ const generalLimiter = rateLimit({
 });
 app.use(generalLimiter);
 
-// AI/LLM endpoints are expensive; rate-limit them by path across all three mounts
-// (/v1, /api, bare). Covers /courses/:id/ai/*, /agent/*, /ai/*, /admin/task/*, generate-summary.
-const isAiPath = (p) =>
-  p.includes('/ai/') || p.includes('/agent/') || p.includes('/admin/task') || p.includes('generate-summary');
-app.use((req, res, next) => (isAiPath(req.path) ? aiLimiter(req, res, next) : next()));
+// AI/LLM endpoints are expensive; rate-limit them by route across all three mounts
+// (/v1, /api, bare). Only endpoints that actually invoke the LLM (or run heavy text
+// extraction) share the strict AI budget. The other /agent/ and /ai/ routes are cheap
+// DB reads/writes — the quiz page fetches assigned quizzes once per course on every
+// render — so they stay under the general limiter; misclassifying them let one page
+// load starve the AI budget and made quiz generation permanently 429.
+const AI_EXPENSIVE = [
+  /\/ai\/chat$/,                   // POST /courses/:courseId/ai/chat
+  /\/courses\/[^/]+\/ai\/quizzes$/, // POST /courses/:courseId/ai/quizzes (generation)
+  /\/ai\/materials$/,              // POST /courses/:courseId/ai/materials (extraction)
+  /\/agent\/chat\/[^/]+$/,         // POST /agent/chat/:courseId
+  /\/agent\/quiz\/[^/]+$/,         // POST /agent/quiz/:courseId (generation fallback)
+  /\/data\/process\/[^/]+$/,       // POST /data/process/:courseId (extraction)
+  /\/admin\/task(\/|$)/,
+  /generate-summary(\/|$)/
+];
+const isAiPath = (req) => req.method === 'POST' && AI_EXPENSIVE.some((re) => re.test(req.path));
+app.use((req, res, next) => (isAiPath(req) ? aiLimiter(req, res, next) : next()));
 
 // Uploaded course materials are not public. No frontend route references /uploads
 // (materials are read server-side for RAG), so require a valid token to fetch one.
