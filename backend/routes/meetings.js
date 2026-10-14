@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { query } from '../db/pool.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
-import { getAccessSecret } from '../config/secrets.js';
+import { getJitsiSecret } from '../config/secrets.js';
 import { getGroqClient, getGroqModel } from '../services/llm.js';
 
 const router = Router();
@@ -407,7 +407,7 @@ async function authorizeJoinHandler(req, res, next) {
         iss: process.env.JITSI_APP_ID || process.env.JITSI_DOMAIN || 'meet.jit.si',
         isHost
       },
-      process.env.JITSI_JWT_SECRET || getAccessSecret(),
+      getJitsiSecret(),
       { expiresIn: '4h' }
     );
 

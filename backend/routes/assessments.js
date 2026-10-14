@@ -36,6 +36,79 @@ function attemptLimitError(res) {
   });
 }
 
+// ---- Grading + attempt-lifecycle helpers (F-09, F-10) ----------------------------------------
+// Question types that a machine cannot grade. They are never auto-scored and always send the
+// submission to manual review, even if the author attached an (empty) answer key.
+const OPEN_QUESTION_TYPES = new Set(['essay', 'short_answer', 'long_answer', 'text', 'code', 'file', 'open', 'open_ended']);
+// Small allowance for network latency / clock skew between the browser timer and the server.
+const ATTEMPT_GRACE_MS = Number(process.env.ATTEMPT_GRACE_SECONDS ?? 5) * 1000;
+// When true, timed quizzes/exams can only be submitted for an attempt started via /start, so the
+// server owns the clock. Off by default because the shipped exam page submits without starting.
+const REQUIRE_ATTEMPT_FOR_TIMED = String(process.env.REQUIRE_ATTEMPT_FOR_TIMED || '').toLowerCase() === 'true';
+
+function normalizeAnswerSet(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return new Set(
+    list
+      .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+      .map((v) => String(v).trim().toLowerCase())
+  );
+}
+
+function answerKey(q) {
+  const raw = Array.isArray(q.correctOptionIds) && q.correctOptionIds.length
+    ? q.correctOptionIds
+    : (q.correctIndex !== undefined && q.correctIndex !== null ? [q.correctIndex] : []);
+  return normalizeAnswerSet(raw);
+}
+
+function isAutoGradableQuestion(q) {
+  if (OPEN_QUESTION_TYPES.has(String(q.type || '').toLowerCase())) return false;
+  return answerKey(q).size > 0;
+}
+
+// Decide how a submission is graded. Fully machine-gradable => auto_graded with a score.
+// Anything with an open-ended or key-less question => manual_review with NO score yet, so an
+// essay is never silently recorded as 0%.
+function classifyGrading(questions, grade, hasContent) {
+  if (!hasContent) return { status: 'pending', score: null };
+  const qs = Array.isArray(questions) ? questions : [];
+  const allAuto = qs.length > 0 && qs.every(isAutoGradableQuestion);
+  return allAuto ? { status: 'auto_graded', score: grade.percentage } : { status: 'manual_review', score: null };
+}
+
+function isAttemptExpired(sub, nowMs = Date.now()) {
+  return Boolean(sub.expires_at) && nowMs > new Date(sub.expires_at).getTime() + ATTEMPT_GRACE_MS;
+}
+
+// Close an overdue attempt using ONLY the answers that were saved before the deadline. Answers
+// that arrive after the time limit are discarded. `exec` is (sql, params) => Promise so the same
+// helper works on the pool and inside a transaction.
+async function finalizeExpiredAttempt(exec, sub) {
+  const snapshot = sub.question_snapshot || [];
+  const grade = gradeResponses(snapshot, sub.responses || []);
+  const cls = classifyGrading(snapshot, grade, grade.answered > 0);
+  const gradedAt = cls.status === 'auto_graded' ? new Date() : null;
+  const r = await exec(
+    `UPDATE submissions
+     SET attempt_status = 'timed_out', submitted_at = now(), expiration_reason = 'time_limit',
+         finalization_reason = 'timeout', grading_status = $1::text, grading_score = $2::numeric,
+         graded_at = COALESCE($3::timestamptz, graded_at), updated_at = now()
+     WHERE id = $4 AND attempt_status = 'in_progress'
+     RETURNING *`,
+    [cls.status, cls.score, gradedAt, sub.id]
+  );
+  return { row: r.rows[0] || null, score: cls.score };
+}
+
+function sendAttemptExpired(res, fin) {
+  return res.status(409).json({
+    error: { code: 'ATTEMPT_EXPIRED', message: 'The time limit for this attempt has passed. Only the answers saved before the deadline were submitted.' },
+    submission: publicSubmission(fin.row),
+    score: fin.score
+  });
+}
+
 function normalizeAssessmentQuestions(questions) {
   if (!Array.isArray(questions)) return [];
   return questions.map((q, idx) => {
@@ -466,6 +539,11 @@ router.post('/assessments/:id/start', authenticate, async (req, res, next) => {
             questions: savedQuestions.map((q) => ({ id: q.id, prompt: q.prompt, type: q.type, options: q.options, points: q.points }))
           });
         }
+        if (existing.attempt_status === 'in_progress' && isAttemptExpired(existing)) {
+          await finalizeExpiredAttempt((t, p) => client.query(t, p), existing);
+          await client.query('COMMIT');
+          return attemptLimitError(res);
+        }
         await client.query('ROLLBACK');
         return attemptLimitError(res);
       }
@@ -533,6 +611,13 @@ router.get('/attempts/:submissionId', authenticate, async (req, res, next) => {
 router.put('/attempts/:submissionId/answers', authenticate, async (req, res, next) => {
   try {
     const { responses } = req.body || {};
+    const current = await query(
+      "SELECT * FROM submissions WHERE id = $1 AND student_id = $2 AND attempt_status = 'in_progress'",
+      [req.params.submissionId, req.user.id]
+    );
+    if (current.rows.length && isAttemptExpired(current.rows[0])) {
+      return sendAttemptExpired(res, await finalizeExpiredAttempt(query, current.rows[0]));
+    }
     const result = await query(
       `UPDATE submissions
        SET responses = $1, updated_at = now()
@@ -562,15 +647,16 @@ router.post('/attempts/:submissionId/submit', authenticate, async (req, res, nex
     if (sub.attempt_status !== 'in_progress' || sub.submitted_at) {
       return attemptLimitError(res);
     }
+    // F-09: the server owns the clock. Answers sent after the deadline are discarded.
+    if (isAttemptExpired(sub)) {
+      return sendAttemptExpired(res, await finalizeExpiredAttempt(query, sub));
+    }
     const questions = sub.question_snapshot || [];
     const storedResponses = sub.responses || [];
     const incoming = Array.isArray(req.body?.responses) ? req.body.responses : storedResponses;
 
     const grade = gradeResponses(questions, incoming);
-    const hasContent = grade.answered > 0;
-    const isAutoGradable = questions.length > 0 && questions.every((q) => q.correctOptionIds || q.correctIndex !== undefined);
-    const gradingStatus = !hasContent ? 'pending' : (isAutoGradable ? 'auto_graded' : 'manual_review');
-    const gradingScore = hasContent && isAutoGradable ? grade.percentage : null;
+    const { status: gradingStatus, score: gradingScore } = classifyGrading(questions, grade, grade.answered > 0);
 
     // Compute graded_at in JS and use each parameter exactly once with an explicit cast.
     // Reusing $2 in both an assignment and a CASE comparison made Postgres fail with
@@ -602,6 +688,8 @@ router.post('/attempts/:submissionId/submit', authenticate, async (req, res, nex
 });
 
 // Auto-grade a set of responses against an assessment's questions.
+// Only machine-gradable questions can earn points. A question with several correct options is
+// worth full points only when the selected set equals the answer key (no credit for one pick of two).
 function gradeResponses(questions, responses) {
   const qs = Array.isArray(questions) ? questions : [];
   const rs = Array.isArray(responses) ? responses : [];
@@ -616,15 +704,12 @@ function gradeResponses(questions, responses) {
     const resp = rs.find((r) => (r.questionId || r.id) === q.id);
     if (!resp) continue;
     const value = resp.value !== undefined ? resp.value : resp.answer;
-    if (value === undefined || value === null || value === '') continue;
+    const selected = normalizeAnswerSet(value);
+    if (selected.size === 0) continue;
     answered += 1;
-    const correct = q.correctOptionIds || (q.correctIndex !== undefined ? [q.correctIndex] : null);
-    if (correct && correct.length) {
-      const isCorrect = correct.some(c =>
-        String(c).trim().toLowerCase() === String(value).trim().toLowerCase()
-      );
-      if (isCorrect) earned += pts;
-    }
+    if (!isAutoGradableQuestion(q)) continue;
+    const key = answerKey(q);
+    if (selected.size === key.size && [...selected].every((v) => key.has(v))) earned += pts;
   }
 
   return {
@@ -672,14 +757,39 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
       return res.status(400).json({ error: { code: 'FILES_NOT_ALLOWED', message: 'Files can only be submitted for assignments and tasks.' } });
     }
 
-    if (submissionId) {
+    // F-09: a student who already started this assessment is completing THAT attempt (so its
+    // deadline applies), even if the client did not send the submission id.
+    let effectiveSubmissionId = submissionId;
+    if (!effectiveSubmissionId && !isStaff) {
+      const open = await query(
+        "SELECT id FROM submissions WHERE student_id = $1 AND assessment_id = $2 AND attempt_status = 'in_progress' ORDER BY created_at DESC LIMIT 1",
+        [req.user.id, a.id]
+      );
+      if (open.rows.length) effectiveSubmissionId = String(open.rows[0].id);
+    }
+    // Timed quizzes/exams (not assignments, which may be handed in late and are flagged as late)
+    // must respect the availability window even without a server-side attempt.
+    if (!isStaff && !effectiveSubmissionId && !['assignment', 'task'].includes(a.type)) {
+      const nowD = new Date();
+      if (a.available_from && nowD < new Date(a.available_from)) {
+        return res.status(409).json({ error: { code: 'ASSESSMENT_NOT_YET_AVAILABLE', message: 'Assessment is not yet available.' } });
+      }
+      if (a.due_at && nowD > new Date(a.due_at)) {
+        return res.status(409).json({ error: { code: 'ASSESSMENT_PAST_DUE', message: 'The deadline for this assessment has passed.' } });
+      }
+      if (REQUIRE_ATTEMPT_FOR_TIMED) {
+        return res.status(409).json({ error: { code: 'ATTEMPT_REQUIRED', message: 'Start the assessment before submitting it.' } });
+      }
+    }
+
+    if (effectiveSubmissionId) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
         const attemptCount = await lockStudentAssessmentAttempt(client, req.user.id, a.id);
         const subRes = await client.query(
           'SELECT * FROM submissions WHERE id = $1 AND student_id = $2 AND assessment_id = $3 FOR UPDATE',
-          [submissionId, req.user.id, a.id]
+          [effectiveSubmissionId, req.user.id, a.id]
         );
         if (subRes.rows.length === 0) {
           await client.query('ROLLBACK');
@@ -690,16 +800,23 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
           await client.query('ROLLBACK');
           return attemptLimitError(res);
         }
+        if (isAttemptExpired(sub)) {
+          const fin = await finalizeExpiredAttempt((t, p) => client.query(t, p), sub);
+          await client.query('COMMIT');
+          return sendAttemptExpired(res, fin);
+        }
         const snapshot = sub.question_snapshot || questions;
         const merged = Array.isArray(provided) && provided.length ? provided : (sub.responses || []);
         const grade = gradeResponses(snapshot, merged);
+        const cls = classifyGrading(snapshot, grade, grade.answered > 0 || uploadedFiles.length > 0);
         const result = await client.query(
           `UPDATE submissions
            SET responses = $1::jsonb, attempt_status = 'submitted', submitted_at = now(),
-               grading_status = $2::text, grading_score = $3::numeric, graded_at = now(), updated_at = now()
-           WHERE id = $4 AND attempt_status = 'in_progress' AND submitted_at IS NULL
+               grading_status = $2::text, grading_score = $3::numeric,
+               graded_at = COALESCE($4::timestamptz, graded_at), updated_at = now()
+           WHERE id = $5 AND attempt_status = 'in_progress' AND submitted_at IS NULL
            RETURNING *`,
-          [JSON.stringify(merged), grade.answered ? 'auto_graded' : 'pending', grade.answered ? grade.percentage : null, sub.id]
+          [JSON.stringify(merged), cls.status, cls.score, cls.status === 'auto_graded' ? new Date() : null, sub.id]
         );
         if (result.rows.length === 0) {
           await client.query('ROLLBACK');
@@ -713,7 +830,7 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
           );
         }
         await client.query('COMMIT');
-        return res.json({ success: true, submission: publicSubmission(result.rows[0]), score: grade.answered ? grade.percentage : null });
+        return res.json({ success: true, submission: publicSubmission(result.rows[0]), score: cls.score });
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -725,9 +842,7 @@ router.post('/assessments/:id/submit', authenticate, assignmentUpload.array('fil
     // Direct submit: grade against the stored answer key. No answers => no score.
     const grade = gradeResponses(questions, provided);
     const hasContent = grade.answered > 0 || uploadedFiles.length > 0;
-    const isAutoGradable = questions.length > 0 && questions.every((q) => q.correctOptionIds || q.correctIndex !== undefined);
-    const gradingStatus = !hasContent ? 'pending' : (isAutoGradable ? 'auto_graded' : 'manual_review');
-    const gradingScore = hasContent && isAutoGradable ? grade.percentage : null;
+    const { status: gradingStatus, score: gradingScore } = classifyGrading(questions, grade, hasContent);
 
     const client = await pool.connect();
     try {
@@ -804,8 +919,15 @@ router.get('/attempts/:submissionId/files/:fileId', authenticate, authorizeSubmi
     );
     if (!result.rows.length) return res.status(404).json({ error: { code: 'FILE_NOT_FOUND', message: 'Submission file not found.' } });
     const file = result.rows[0];
-    res.set('Content-Type', file.mime_type || 'application/octet-stream');
-    res.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
+    // F-14: never trust the uploader-supplied MIME type. Only types that are inert in a browser
+    // are shown inline (chosen by the file extension); everything else is a forced download.
+    const SAFE_INLINE = { '.pdf': 'application/pdf', '.txt': 'text/plain; charset=utf-8' };
+    const ext = (String(file.original_name || '').toLowerCase().match(/\.[^.]+$/) || [''])[0];
+    const inlineType = SAFE_INLINE[ext];
+    res.set('Content-Type', inlineType || 'application/octet-stream');
+    res.set('Content-Disposition', `${inlineType ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.original_name)}`);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.set('Cache-Control', 'private, no-store');
     res.send(file.file_data);
   } catch (err) { next(err); }
 });

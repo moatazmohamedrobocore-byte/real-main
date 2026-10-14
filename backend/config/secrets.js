@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 // Centralized JWT secret resolution with fail-closed validation.
 // Import and call validateSecrets() at server startup BEFORE any route mounts.
 // Replaces the three weak fallback strings that previously lived in
@@ -47,6 +49,10 @@ export function validateSecrets() {
   if (access && refresh && access === refresh && process.env.JWT_ACCESS_SECRET && process.env.JWT_REFRESH_SECRET) {
     errors.push('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different values.');
   }
+  const jitsi = process.env.JITSI_JWT_SECRET;
+  if (jitsi && (jitsi === access || jitsi === refresh)) {
+    errors.push('JITSI_JWT_SECRET must differ from the API JWT secrets (a join token must never be a valid API token).');
+  }
   if (errors.length > 0) {
     throw new Error(`JWT secret configuration is invalid:\n  - ${errors.join('\n  - ')}`);
   }
@@ -59,4 +65,12 @@ export function getAccessSecret() {
 
 export function getRefreshSecret() {
   return resolveSecrets().refresh;
+}
+
+// F-08: signing key for Jitsi join tokens. Always distinct from the API access secret: either an
+// explicit JITSI_JWT_SECRET, or a key derived from the access secret with a fixed label, so
+// existing deployments keep working without new configuration.
+export function getJitsiSecret() {
+  if (process.env.JITSI_JWT_SECRET) return process.env.JITSI_JWT_SECRET;
+  return crypto.createHmac('sha256', getAccessSecret()).update('real-i/jitsi-join-token/v1').digest('hex');
 }

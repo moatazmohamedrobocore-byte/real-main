@@ -4,6 +4,19 @@ import { getAccessSecret } from '../config/secrets.js';
 
 const getSecret = () => getAccessSecret();
 
+// F-08 / F-19: only genuine API access tokens are accepted. The algorithm is pinned and the
+// `type` claim must be 'access', so a refresh token or a Jitsi join token (which carries no
+// such claim and is signed with a different key) can never authenticate an API request.
+function verifyAccessToken(token) {
+  const decoded = jwt.verify(token, getSecret(), { algorithms: ['HS256'] });
+  if (decoded.type !== 'access' || !decoded.sub) {
+    const err = new Error('Not an access token.');
+    err.name = 'JsonWebTokenError';
+    throw err;
+  }
+  return decoded;
+}
+
 export async function authenticate(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
@@ -12,8 +25,8 @@ export async function authenticate(req, res, next) {
 
   const token = header.slice(7).trim();
   try {
-    const decoded = jwt.verify(token, getSecret());
-    const userId = decoded.sub || decoded.id || decoded.userId;
+    const decoded = verifyAccessToken(token);
+    const userId = decoded.sub;
 
     const result = await query(
       'SELECT id, email, name, role FROM users WHERE id = $1 AND deleted_at IS NULL',
@@ -31,7 +44,8 @@ export async function authenticate(req, res, next) {
       role: user.role,
       email: user.email,
       name: user.name,
-      tokenId: decoded.jti || null
+      tokenId: decoded.jti || null,
+      familyId: decoded.fid || null
     };
 
     next();
@@ -53,8 +67,8 @@ export async function authenticateOptional(req, res, next) {
 
   const token = header.slice(7).trim();
   try {
-    const decoded = jwt.verify(token, getSecret());
-    const userId = decoded.sub || decoded.id || decoded.userId;
+    const decoded = verifyAccessToken(token);
+    const userId = decoded.sub;
 
     const result = await query(
       'SELECT id, email, name, role FROM users WHERE id = $1 AND deleted_at IS NULL',
@@ -69,7 +83,8 @@ export async function authenticateOptional(req, res, next) {
         role: user.role,
         email: user.email,
         name: user.name,
-        tokenId: decoded.jti || null
+        tokenId: decoded.jti || null,
+        familyId: decoded.fid || null
       };
     }
   } catch (_) {

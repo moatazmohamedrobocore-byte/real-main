@@ -139,7 +139,11 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Rate limiters. Keyed on IP + email (when present) so one attacker can't spray many accounts.
-const authKey = (req) => `${req.ip}:${(req.body?.email || '').toLowerCase()}`;
+// F-12: the key MUST be normalised exactly like the handlers normalise the email (trim +
+// lowercase), otherwise " a@b.co", "a@b.co " and "A@b.co" are three separate buckets for one
+// account. A non-string email (array/object/number) must not crash the key generator either.
+const normEmail = (v) => (typeof v === 'string' ? v.trim().toLowerCase() : '');
+const authKey = (req) => `${req.ip}:${normEmail(req.body?.email)}`;
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -147,6 +151,16 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: authKey,
   message: { error: { code: 'RATE_LIMITED', message: 'Too many attempts. Try again in 15 minutes.' } }
+});
+// F-12: per-IP ceiling on FAILED logins, independent of the email supplied, so one client
+// cannot password-spray many accounts. Successful logins are not counted (shared campus IPs).
+const loginIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many failed sign-in attempts from this network. Try again in 15 minutes.' } }
 });
 const forgotLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -193,7 +207,7 @@ app.get('/health', async (_req, res) => {
 
 // Helper to mount routers at a prefix
 function mountRouters(prefix = '') {
-  app.use(`${prefix}/auth/login`, authLimiter);
+  app.use(`${prefix}/auth/login`, loginIpLimiter, authLimiter);
   app.use(`${prefix}/auth/register`, authLimiter);
   app.use(`${prefix}/auth/forgot-password`, forgotLimiter);
   app.use(`${prefix}/auth/reset-password`, forgotLimiter);
@@ -215,7 +229,7 @@ startCalendarReminderScheduler();
 startMaintenanceScheduler();
 
 // Direct /login and /register shortcuts if frontend hits them directly
-app.post('/login', authLimiter, (req, res, next) => {
+app.post('/login', loginIpLimiter, authLimiter, (req, res, next) => {
   req.url = '/login';
   authRoutes(req, res, next);
 });
@@ -229,7 +243,16 @@ const webRoot = path.resolve(__dirname, '../apps/web');
 if (fs.existsSync(path.join(webRoot, 'index.html'))) {
   console.log(`Serving frontend static build from ${webRoot}`);
   // Hashed assets (e.g. index-BOtlBGmE.js) — cache for 1 year since the hash changes on rebuild
-  app.use('/assets', express.static(path.join(webRoot, 'assets'), { maxAge: '365d', immutable: true }));
+  // Bundles edited in place (see frontend-patches/patch-registry.md) keep their old content hash,
+  // so they must be revalidated rather than cached as immutable, or returning users never see the fix.
+  const IN_PLACE_PATCHED_ASSETS = /^StudentQuiz-.*\.js$/;
+  app.use('/assets', express.static(path.join(webRoot, 'assets'), {
+    maxAge: '365d',
+    immutable: true,
+    setHeaders: (res, filePath) => {
+      if (IN_PLACE_PATCHED_ASSETS.test(path.basename(filePath))) res.setHeader('Cache-Control', 'no-cache');
+    }
+  }));
   // Fonts — also long-cache
   app.use('/fonts', express.static(path.join(webRoot, 'fonts'), { maxAge: '365d', immutable: true }));
   // Everything else (index.html, favicon, logo) — no-cache so updates are picked up immediately

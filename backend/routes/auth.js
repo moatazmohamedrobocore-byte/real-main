@@ -31,7 +31,7 @@ function issueTokens(user, familyId = null) {
   const tokenFamilyId = familyId || crypto.randomUUID();
 
   const accessToken = jwt.sign(
-    { sub: String(user.id), role: user.role, type: 'access', jti: accessJti },
+    { sub: String(user.id), role: user.role, type: 'access', jti: accessJti, fid: tokenFamilyId },
     getAccessSecret(),
     { expiresIn: '15m' }
   );
@@ -181,6 +181,9 @@ router.post('/refresh', async (req, res, next) => {
     try {
       decoded = jwt.verify(refreshToken, getRefreshSecret());
     } catch (_) {
+      return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired refresh token.' } });
+    }
+    if (decoded.type !== 'refresh') {
       return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired refresh token.' } });
     }
 
@@ -376,8 +379,16 @@ router.post('/reset-password', async (req, res, next) => {
 // POST /logout
 router.post('/logout', authenticate, async (req, res, next) => {
   try {
-    if (req.auth?.tokenId) {
-      await query('UPDATE refresh_tokens SET revoked_at = now() WHERE jti = $1', [req.auth.tokenId]);
+    // F-11: revoke this login session's whole refresh-token family. The access token carries the
+    // family id (`fid`), so the client does not need to send its refresh token. Tokens issued
+    // before this change have no `fid`; for those, sign the user out of all their sessions.
+    if (req.auth?.familyId) {
+      await query(
+        'UPDATE refresh_tokens SET revoked_at = now() WHERE family_id = $1 AND user_id = $2 AND revoked_at IS NULL',
+        [req.auth.familyId, req.user.id]
+      );
+    } else {
+      await query('UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [req.user.id]);
     }
     res.status(204).send();
   } catch (err) {

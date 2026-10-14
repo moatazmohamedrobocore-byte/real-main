@@ -106,3 +106,13 @@ the tag, you lose these — re-apply from git or from this registry.
 staff with no active session get `{authorized:false, canStart:true, waitingForHost:true}`.
 An already-`live` session is still reused/joined on sidebar click (expected "resume" behavior).
 
+---
+
+## Quiz answer reveal (right/wrong + AI explanation) — in-place patch
+
+| File | Change (before → after) | Why | DEF |
+|---|---|---|---|
+| `StudentQuiz-D7rIh7I4.js` | import `api as AX`; new state `[PD,SPD]`; `oe` (option click) is now async and calls `POST /ai/quizzes/:quizId/answer`, then stores the returned `correct_answer` and `explanation` on the current question before revealing | The generate response no longer contains `correct_answer` / `explanation` (answer-key leak fix), so the page had nothing to show after a student chose an option. The server now reveals one question's result only after that choice is locked in | quiz-feedback regression [verified] |
+
+`backend/server.js` serves `StudentQuiz-*.js` with `Cache-Control: no-cache` (it keeps its old hash). Clients that
+already cached the old file need one hard refresh.
