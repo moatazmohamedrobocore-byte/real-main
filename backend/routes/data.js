@@ -520,6 +520,50 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
 router.post('/courses/:courseId/ai/quizzes', authenticate, generateQuizHandler);
 router.post('/agent/quiz/:courseId', authenticate, generateQuizHandler);
 
+// POST /ai/quizzes/:quizId/answer — lock in ONE answer and reveal that question's result.
+// The quiz page shows right/wrong plus the AI explanation as soon as a student picks an option.
+// The key still never leaves the server up front: a question's correct option and explanation
+// are released only AFTER the caller's choice for that question is recorded. The first choice
+// wins (it cannot be changed after seeing the answer) and the final grade honours it.
+router.post('/ai/quizzes/:quizId/answer', authenticate, async (req, res, next) => {
+  try {
+    const { questionId, selected } = req.body || {};
+    const choice = Number(selected);
+    if (typeof questionId !== 'string' || !questionId || !Number.isInteger(choice) || choice < 0 || choice > 9) {
+      return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'questionId and a numeric selected option are required.' } });
+    }
+    const locked = await query(
+      `UPDATE ai_quiz_keys
+       SET locked_answers = CASE WHEN jsonb_exists(locked_answers, $2::text) THEN locked_answers
+                                 ELSE locked_answers || jsonb_build_object($2::text, $3::int) END
+       WHERE quiz_id = $1 AND (user_id IS NULL OR user_id = $4) AND graded_result IS NULL
+         AND created_at >= now() - make_interval(hours => $5)
+       RETURNING questions, locked_answers`,
+      [req.params.quizId, questionId, choice, req.user.id, AI_QUIZ_TTL_HOURS]
+    );
+    if (locked.rows.length === 0) {
+      return res.status(404).json({ error: { code: 'QUIZ_NOT_FOUND', message: 'Quiz expired, already graded, or not found.' } });
+    }
+    const question = (locked.rows[0].questions || []).find((q) => q.id === questionId);
+    if (!question) {
+      return res.status(404).json({ error: { code: 'QUESTION_NOT_FOUND', message: 'Question not found in this quiz.' } });
+    }
+    const finalChoice = Number(locked.rows[0].locked_answers[questionId]);
+    const correctIndex = Number(question.correctIndex);
+    res.json({
+      questionId,
+      selected: finalChoice,
+      isCorrect: finalChoice === correctIndex,
+      correctIndex,
+      // The quiz page keys options by their array index as a string.
+      correct_answer: String(correctIndex),
+      explanation: question.explanation || ''
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /ai/quizzes/:quizId/grade — server-side grading of an AI practice quiz.
 // Accepts { answers: { [questionId]: selectedIndex } } (or an array) and returns the
 // score without ever exposing the answer key to the client.
@@ -529,7 +573,7 @@ router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) =>
     // and it is graded exactly once. The first submission is the authoritative score; later
     // calls replay it, so a student cannot learn the key and then re-grade with perfect answers.
     const keyRes = await query(
-      `SELECT questions, graded_result FROM ai_quiz_keys
+      `SELECT questions, graded_result, locked_answers FROM ai_quiz_keys
        WHERE quiz_id = $1 AND (user_id IS NULL OR user_id = $2)
          AND created_at >= now() - make_interval(hours => $3)`,
       [req.params.quizId, req.user.id, AI_QUIZ_TTL_HOURS]
@@ -542,7 +586,12 @@ router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) =>
     }
     const entry = { questions: keyRes.rows[0].questions };
     const raw = (req.body && req.body.answers) || {};
-    const pick = (id) => (Array.isArray(raw) ? (raw.find((a) => (a.questionId || a.id) === id) || {}).value : raw[id]);
+    const fromClient = Array.isArray(raw)
+      ? Object.fromEntries(raw.map((a) => [a.questionId || a.id, a.value]))
+      : raw;
+    // Answers already locked in via /answer (and therefore already revealed) cannot be changed.
+    const answers = { ...fromClient, ...(keyRes.rows[0].locked_answers || {}) };
+    const pick = (id) => answers[id];
 
     let correct = 0;
     const detail = entry.questions.map((q) => {

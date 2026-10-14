@@ -280,7 +280,7 @@ router.delete('/:id', authenticate, requireRoles('admin'), async (req, res, next
 // POST /:courseId/enroll (student self-enrollment)
 router.post('/:courseId/enroll', authenticate, async (req, res, next) => {
   try {
-    const courseRes = await query('SELECT id, status, enrollment_open FROM courses WHERE id = $1', [req.params.courseId]);
+    const courseRes = await query('SELECT id, status, enrollment_open, pricing_access FROM courses WHERE id = $1', [req.params.courseId]);
     if (courseRes.rows.length === 0) {
       return res.status(404).json({ error: { code: 'COURSE_NOT_FOUND', message: 'Course not found.' } });
     }
@@ -288,6 +288,11 @@ router.post('/:courseId/enroll', authenticate, async (req, res, next) => {
     const course = courseRes.rows[0];
     if (course.status !== 'published' || !course.enrollment_open) {
       return res.status(400).json({ error: { code: 'ENROLLMENT_CLOSED', message: 'This course is not accepting enrollments.' } });
+    }
+    // F-15: paid courses cannot be self-enrolled. There is no payment flow yet, so enrollment in
+    // a paid course is an admin action (POST /courses/:courseId/enroll/:id).
+    if (course.pricing_access === 'paid') {
+      return res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'This is a paid course. Enrollment requires payment or an administrator.' } });
     }
 
     const result = await query(

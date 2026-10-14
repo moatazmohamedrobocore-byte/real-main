@@ -359,6 +359,8 @@ ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(
 ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS graded_at TIMESTAMPTZ;
 ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS graded_result JSONB;
 ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS claimed_task_id TEXT;
+-- Per-question answers locked in via POST /ai/quizzes/:id/answer (first answer wins).
+ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS locked_answers JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_ai_quiz_keys_user ON ai_quiz_keys(user_id, graded_at DESC);
 
 -- Chat Sessions Table
