@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="REAL.i Platform Audit Rating Dashboard — Comprehensive system audit with security, content, engagement, and performance scorecards." />
+  <title>Audit Rating | REAL.i</title>
+  <link rel="icon" type="image/webp" href="/logo.webp" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Orbitron:wght@700;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════════════════════════════════════════════════════
+       DESIGN TOKENS
+    ═══════════════════════════════════════════════════════════════════ */
+    :root {
+      --bg-deep:        #05070E;
+      --bg-card:        #0b0f1a;
+      --bg-card-hover:  #111828;
+      --bg-elevated:    #141a2b;
+      --border-subtle:  rgba(255,255,255,0.06);
+      --border-active:  rgba(139,92,246,0.3);
+
+      --text-primary:   #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted:     #64748b;
+
+      --accent-violet:  #8b5cf6;
+      --accent-blue:    #3b82f6;
+      --accent-cyan:    #06b6d4;
+      --accent-emerald: #10b981;
+      --accent-amber:   #f59e0b;
+      --accent-rose:    #f43f5e;
+      --accent-orange:  #f97316;
+
+      --grade-a:  linear-gradient(135deg, #10b981, #059669);
+      --grade-b:  linear-gradient(135deg, #3b82f6, #2563eb);
+      --grade-c:  linear-gradient(135deg, #f59e0b, #d97706);
+      --grade-d:  linear-gradient(135deg, #f97316, #ea580c);
+      --grade-f:  linear-gradient(135deg, #f43f5e, #dc2626);
+
+      --glow-violet: 0 0 40px rgba(139,92,246,0.15);
+      --glow-blue:   0 0 40px rgba(59,130,246,0.15);
+      --glow-green:  0 0 40px rgba(16,185,129,0.15);
+      --glow-amber:  0 0 40px rgba(245,158,11,0.15);
+
+      --radius-sm:  8px;
+      --radius-md:  14px;
+      --radius-lg:  20px;
+      --radius-xl:  28px;
+
+      --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-display: 'Orbitron', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       RESET & BASE
+    ═══════════════════════════════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Animated gradient background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% 20%, rgba(139,92,246,0.08), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 80%, rgba(59,130,246,0.06), transparent),
+        radial-gradient(ellipse 50% 60% at 50% 50%, rgba(16,185,129,0.04), transparent);
+      pointer-events: none;
+      z-index: 0;
+      animation: bgPulse 12s ease-in-out infinite alternate;
+    }
+    @keyframes bgPulse {
+      0%   { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       LOADING SCREEN
+    ═══════════════════════════════════════════════════════════════════ */
+    #loading-screen {
+      position: fixed;
+      inset: 0;
+      background: var(--bg-deep);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+      transition: opacity 0.6s ease, visibility 0.6s;
+    }
+    #loading-screen.hidden { opacity: 0; visibility: hidden; }
+
+    .loader-ring {
+      width: 80px; height: 80px;
+      border: 3px solid var(--border-subtle);
+      border-top-color: var(--accent-violet);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loader-text {
+      margin-top: 24px;
+      font-family: var(--font-display);
+      font-size: 14px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      animation: fadeInOut 1.5s ease-in-out infinite;
+    }
+    @keyframes fadeInOut {
+      0%, 100% { opacity: 0.4; }
+      50%      { opacity: 1; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       ERROR SCREEN
+    ═══════════════════════════════════════════════════════════════════ */
+    #error-screen {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: var(--bg-deep);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10001;
+      padding: 40px;
+      text-align: center;
+    }
+    #error-screen.visible { display: flex; }
+    .error-icon { font-size: 64px; margin-bottom: 20px; }
+    .error-title { font-family: var(--font-display); font-size: 24px; color: var(--accent-rose); margin-bottom: 12px; }
+    .error-message { color: var(--text-secondary); font-size: 15px; max-width: 440px; margin-bottom: 32px; }
+    .error-btn {
+      padding: 12px 32px;
+      border: 1px solid var(--accent-violet);
+      background: transparent;
+      color: var(--accent-violet);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .error-btn:hover { background: var(--accent-violet); color: #fff; }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       LAYOUT
+    ═══════════════════════════════════════════════════════════════════ */
+    .dashboard {
+      position: relative;
+      z-index: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 32px 24px 80px;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.7s ease, transform 0.7s ease;
+    }
+    .dashboard.visible { opacity: 1; transform: translateY(0); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       HEADER
+    ═══════════════════════════════════════════════════════════════════ */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 40px;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .header-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      object-fit: contain;
+    }
+    .header-title {
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 900;
+      letter-spacing: 2px;
+      background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .header-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .timestamp {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      background: var(--bg-elevated);
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+    }
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 18px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.3s;
+    }
+    .back-btn:hover { border-color: var(--accent-violet); color: var(--text-primary); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       OVERALL SCORE HERO
+    ═══════════════════════════════════════════════════════════════════ */
+    .hero {
+      text-align: center;
+      margin-bottom: 48px;
+      padding: 48px 24px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 0%, rgba(139,92,246,0.1), transparent 60%);
+      pointer-events: none;
+    }
+
+    .score-ring-container {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 24px;
+    }
+    .score-ring {
+      width: 200px;
+      height: 200px;
+      transform: rotate(-90deg);
+    }
+    .score-ring-bg {
+      fill: none;
+      stroke: rgba(255,255,255,0.05);
+      stroke-width: 8;
+    }
+    .score-ring-fill {
+      fill: none;
+      stroke-width: 8;
+      stroke-linecap: round;
+      stroke-dasharray: 565;
+      stroke-dashoffset: 565;
+      transition: stroke-dashoffset 2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .score-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .score-value {
+      font-family: var(--font-display);
+      font-size: 56px;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .score-suffix {
+      font-family: var(--font-mono);
+      font-size: 18px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .hero-grade {
+      display: inline-block;
+      font-family: var(--font-display);
+      font-size: 18px;
+      font-weight: 700;
+      padding: 8px 24px;
+      border-radius: var(--radius-sm);
+      color: #fff;
+      margin-bottom: 8px;
+      letter-spacing: 2px;
+    }
+    .hero-label {
+      font-size: 16px;
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       CATEGORY GRID
+    ═══════════════════════════════════════════════════════════════════ */
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      margin-bottom: 48px;
+    }
+
+    .category-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    .category-card:hover {
+      transform: translateY(-4px);
+      border-color: var(--border-active);
+    }
+    .category-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      border-radius: 3px 3px 0 0;
+    }
+    .category-card[data-category="security"]::before    { background: linear-gradient(90deg, var(--accent-rose), var(--accent-orange)); }
+    .category-card[data-category="content"]::before     { background: linear-gradient(90deg, var(--accent-violet), var(--accent-blue)); }
+    .category-card[data-category="engagement"]::before  { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); }
+    .category-card[data-category="performance"]::before { background: linear-gradient(90deg, var(--accent-amber), var(--accent-orange)); }
+
+    .category-card[data-category="security"]:hover    { box-shadow: 0 0 30px rgba(244,63,94,0.1); }
+    .category-card[data-category="content"]:hover     { box-shadow: var(--glow-violet); }
+    .category-card[data-category="engagement"]:hover  { box-shadow: var(--glow-green); }
+    .category-card[data-category="performance"]:hover { box-shadow: var(--glow-amber); }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .card-title-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-icon {
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      font-size: 20px;
+    }
+    .category-card[data-category="security"]    .card-icon { background: rgba(244,63,94,0.12); }
+    .category-card[data-category="content"]     .card-icon { background: rgba(139,92,246,0.12); }
+    .category-card[data-category="engagement"]  .card-icon { background: rgba(6,182,212,0.12); }
+    .category-card[data-category="performance"] .card-icon { background: rgba(245,158,11,0.12); }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .card-weight {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .card-score-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-grade {
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 6px;
+      color: #fff;
+      letter-spacing: 1px;
+    }
+    .card-score-num {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    /* Progress bar */
+    .card-progress {
+      height: 6px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 3px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+    .card-progress-fill {
+      height: 100%;
+      border-radius: 3px;
+      width: 0;
+      transition: width 1.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .category-card[data-category="security"]    .card-progress-fill { background: linear-gradient(90deg, var(--accent-rose), var(--accent-orange)); }
+    .category-card[data-category="content"]     .card-progress-fill { background: linear-gradient(90deg, var(--accent-violet), var(--accent-blue)); }
+    .category-card[data-category="engagement"]  .card-progress-fill { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); }
+    .category-card[data-category="performance"] .card-progress-fill { background: linear-gradient(90deg, var(--accent-amber), var(--accent-orange)); }
+
+    /* Stats grid inside card */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .stat-item {
+      background: var(--bg-elevated);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      border: 1px solid var(--border-subtle);
+      transition: border-color 0.2s;
+    }
+    .stat-item:hover { border-color: rgba(255,255,255,0.1); }
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .stat-value .unit {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       SECURITY FINDINGS TABLE
+    ═══════════════════════════════════════════════════════════════════ */
+    .findings-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      margin-bottom: 48px;
+    }
+    .findings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .findings-title {
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .findings-badge-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .findings-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+    }
+    .badge-critical { background: rgba(244,63,94,0.15); color: var(--accent-rose); }
+    .badge-high     { background: rgba(249,115,22,0.15); color: var(--accent-orange); }
+    .badge-medium   { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+    .badge-remediated { background: rgba(16,185,129,0.15); color: var(--accent-emerald); }
+
+    .findings-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0 6px;
+    }
+    .findings-table th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      font-weight: 600;
+      padding: 8px 14px;
+    }
+    .findings-table td {
+      padding: 14px;
+      background: var(--bg-elevated);
+      font-size: 13px;
+      transition: background 0.2s;
+    }
+    .findings-table tr:hover td { background: var(--bg-card-hover); }
+    .findings-table td:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+    .findings-table td:last-child  { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+
+    .finding-id {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .severity-pill {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .pill-critical { background: rgba(244,63,94,0.15); color: var(--accent-rose); }
+    .pill-high     { background: rgba(249,115,22,0.15); color: var(--accent-orange); }
+    .pill-medium   { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 20px;
+    }
+    .status-remediated { background: rgba(16,185,129,0.12); color: var(--accent-emerald); }
+    .status-open       { background: rgba(244,63,94,0.12); color: var(--accent-rose); }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .status-remediated .status-dot { background: var(--accent-emerald); box-shadow: 0 0 8px rgba(16,185,129,0.5); }
+    .status-open       .status-dot { background: var(--accent-rose); box-shadow: 0 0 8px rgba(244,63,94,0.5); animation: blink 1.5s ease-in-out infinite; }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.3; }
+    }
+
+    .finding-notes {
+      font-size: 12px;
+      color: var(--text-muted);
+      max-width: 300px;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       WEIGHT BREAKDOWN
+    ═══════════════════════════════════════════════════════════════════ */
+    .breakdown {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      margin-bottom: 48px;
+    }
+    .breakdown-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .breakdown-bars {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .breakdown-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .breakdown-label {
+      min-width: 120px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .breakdown-bar-outer {
+      flex: 1;
+      height: 28px;
+      background: rgba(255,255,255,0.03);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      position: relative;
+    }
+    .breakdown-bar-inner {
+      height: 100%;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      width: 0;
+      transition: width 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+      min-width: fit-content;
+    }
+    .bar-security    { background: linear-gradient(90deg, var(--accent-rose), var(--accent-orange)); }
+    .bar-content     { background: linear-gradient(90deg, var(--accent-violet), var(--accent-blue)); }
+    .bar-engagement  { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald)); }
+    .bar-performance { background: linear-gradient(90deg, var(--accent-amber), var(--accent-orange)); }
+
+    .breakdown-score {
+      min-width: 55px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       FOOTER
+    ═══════════════════════════════════════════════════════════════════ */
+    .footer {
+      text-align: center;
+      padding: 24px;
+      color: var(--text-muted);
+      font-size: 12px;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .footer a {
+      color: var(--accent-violet);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .footer a:hover { text-decoration: underline; }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════════════════════════════════ */
+    @media (max-width: 768px) {
+      .header { flex-direction: column; align-items: flex-start; }
+      .header-title { font-size: 22px; }
+      .hero { padding: 32px 16px; }
+      .score-ring { width: 160px; height: 160px; }
+      .score-value { font-size: 42px; }
+      .category-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: 1fr; }
+      .findings-table { display: block; overflow-x: auto; }
+      .breakdown-row { flex-direction: column; align-items: flex-start; }
+      .breakdown-bar-outer { width: 100%; }
+      .breakdown-label { min-width: unset; }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       ANIMATION UTILITIES
+    ═══════════════════════════════════════════════════════════════════ */
+    .animate-in {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .animate-in.visible { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen">
+    <div class="loader-ring"></div>
+    <div class="loader-text">Computing Audit Metrics</div>
+  </div>
+
+  <!-- Error Screen -->
+  <div id="error-screen">
+    <div class="error-icon">🛡️</div>
+    <div class="error-title">Audit Access Denied</div>
+    <div id="error-message" class="error-message">You must be logged in as an admin to view the audit rating dashboard.</div>
+    <button class="error-btn" onclick="window.location.href='/login'">Sign In</button>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard" id="dashboard">
+
+    <!-- Header -->
+    <header class="header animate-in">
+      <div class="header-left">
+        <img src="/logo.webp" alt="REAL.i" class="header-logo" />
+        <div>
+          <div class="header-title">AUDIT RATING</div>
+          <div class="header-subtitle">Comprehensive Platform Health Assessment</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <span class="timestamp" id="audit-timestamp"></span>
+        <a class="back-btn" href="/">← Dashboard</a>
+      </div>
+    </header>
+
+    <!-- Overall Score Hero -->
+    <section class="hero animate-in" id="hero-section">
+      <div class="score-ring-container">
+        <svg class="score-ring" viewBox="0 0 200 200">
+          <circle class="score-ring-bg" cx="100" cy="100" r="90" />
+          <circle class="score-ring-fill" id="score-ring-fill" cx="100" cy="100" r="90" />
+        </svg>
+        <div class="score-center">
+          <div class="score-value" id="overall-score">—</div>
+          <div class="score-suffix">/ 100</div>
+        </div>
+      </div>
+      <div>
+        <div class="hero-grade" id="overall-grade"></div>
+      </div>
+      <div class="hero-label" id="overall-label"></div>
+    </section>
+
+    <!-- Category Cards -->
+    <section class="category-grid" id="category-grid"></section>
+
+    <!-- Weight Breakdown -->
+    <section class="breakdown animate-in" id="breakdown-section">
+      <div class="breakdown-title">📊 Score Breakdown by Weight</div>
+      <div class="breakdown-bars" id="breakdown-bars"></div>
+    </section>
+
+    <!-- Security Findings Table -->
+    <section class="findings-section animate-in" id="findings-section"></section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      Generated by <a href="/">REAL.i</a> Audit Engine · Scores computed from live platform data
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // ── Auth ──────────────────────────────────────────────────────
+      const token = localStorage.getItem('reali_token') || localStorage.getItem('token');
+      if (!token) {
+        showError('You must be logged in as an admin to view the audit dashboard.');
+        return;
+      }
+
+      const API = window.__REAL_I_API_BASE_URL__ || '/v1';
+
+      fetch(`${API}/admin/audit/rating`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+        .then((r) => {
+          if (r.status === 401 || r.status === 403) throw new Error('AUTH');
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+        .then(render)
+        .catch((err) => {
+          if (err.message === 'AUTH') {
+            showError('You must be logged in as an admin to view the audit dashboard.');
+          } else {
+            showError(`Failed to load audit data: ${err.message}`);
+          }
+        });
+
+      // ── Error ─────────────────────────────────────────────────────
+      function showError(msg) {
+        document.getElementById('loading-screen').classList.add('hidden');
+        document.getElementById('error-message').textContent = msg;
+        document.getElementById('error-screen').classList.add('visible');
+      }
+
+      // ── Grade color helpers ───────────────────────────────────────
+      function gradeGradient(grade) {
+        const g = grade.replace(/[+-]/, '');
+        if (g === 'A') return 'var(--grade-a)';
+        if (g === 'B') return 'var(--grade-b)';
+        if (g === 'C') return 'var(--grade-c)';
+        if (g === 'D') return 'var(--grade-d)';
+        return 'var(--grade-f)';
+      }
+
+      function scoreColor(score) {
+        if (score >= 80) return 'var(--accent-emerald)';
+        if (score >= 60) return 'var(--accent-blue)';
+        if (score >= 40) return 'var(--accent-amber)';
+        return 'var(--accent-rose)';
+      }
+
+      function ringStrokeUrl(score) {
+        if (score >= 80) return '#10b981';
+        if (score >= 60) return '#3b82f6';
+        if (score >= 40) return '#f59e0b';
+        return '#f43f5e';
+      }
+
+      // ── Render ────────────────────────────────────────────────────
+      function render(data) {
+        // Timestamp
+        const ts = new Date(data.timestamp);
+        document.getElementById('audit-timestamp').textContent =
+          ts.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+        // Overall score
+        const overall = data.overall;
+        document.getElementById('overall-score').textContent = overall.score;
+        const gradeEl = document.getElementById('overall-grade');
+        gradeEl.textContent = `Grade: ${overall.grade}`;
+        gradeEl.style.background = gradeGradient(overall.grade);
+        document.getElementById('overall-label').textContent = overall.label;
+
+        // Ring animation
+        const ringFill = document.getElementById('score-ring-fill');
+        ringFill.style.stroke = ringStrokeUrl(overall.score);
+        const circumference = 2 * Math.PI * 90;
+        const offset = circumference - (overall.score / 100) * circumference;
+        requestAnimationFrame(() => {
+          ringFill.style.strokeDashoffset = offset;
+        });
+
+        // Category cards
+        const categories = [
+          { key: 'security',    icon: '🛡️', title: 'Security Posture' },
+          { key: 'content',     icon: '📚', title: 'Content Quality' },
+          { key: 'engagement',  icon: '👥', title: 'User Engagement' },
+          { key: 'performance', icon: '⚡', title: 'Platform Performance' },
+        ];
+
+        const grid = document.getElementById('category-grid');
+        grid.innerHTML = '';
+
+        categories.forEach((cat, i) => {
+          const d = data.categories[cat.key];
+          const card = document.createElement('div');
+          card.className = 'category-card animate-in';
+          card.setAttribute('data-category', cat.key);
+          card.style.transitionDelay = `${i * 0.12}s`;
+
+          const statsHtml = buildStatsHtml(cat.key, d.stats);
+
+          card.innerHTML = `
+            <div class="card-header">
+              <div class="card-title-group">
+                <div class="card-icon">${cat.icon}</div>
+                <div>
+                  <div class="card-title">${cat.title}</div>
+                  <div class="card-weight">Weight: ${d.weight}</div>
+                </div>
+              </div>
+              <div class="card-score-badge">
+                <span class="card-grade" style="background:${gradeGradient(d.grade)}">${d.grade}</span>
+                <span class="card-score-num" style="color:${scoreColor(d.score)}">${d.score}</span>
+              </div>
+            </div>
+            <div class="card-progress">
+              <div class="card-progress-fill" data-width="${d.score}%"></div>
+            </div>
+            <div class="stats-grid">${statsHtml}</div>
+          `;
+          grid.appendChild(card);
+        });
+
+        // Breakdown bars
+        const bars = document.getElementById('breakdown-bars');
+        bars.innerHTML = '';
+        const barConfigs = [
+          { key: 'security',    label: 'Security',    cls: 'bar-security' },
+          { key: 'content',     label: 'Content',     cls: 'bar-content' },
+          { key: 'engagement',  label: 'Engagement',  cls: 'bar-engagement' },
+          { key: 'performance', label: 'Performance', cls: 'bar-performance' },
+        ];
+        barConfigs.forEach((b) => {
+          const d = data.categories[b.key];
+          const row = document.createElement('div');
+          row.className = 'breakdown-row';
+          row.innerHTML = `
+            <span class="breakdown-label">${b.label} (${d.weight})</span>
+            <div class="breakdown-bar-outer">
+              <div class="breakdown-bar-inner ${b.cls}" data-width="${d.score}%">${d.score}/100</div>
+            </div>
+            <span class="breakdown-score" style="color:${scoreColor(d.score)}">${d.grade}</span>
+          `;
+          bars.appendChild(row);
+        });
+
+        // Security findings table
+        renderFindings(data.categories.security);
+
+        // Reveal dashboard
+        document.getElementById('loading-screen').classList.add('hidden');
+        document.getElementById('dashboard').classList.add('visible');
+
+        // Trigger animations
+        setTimeout(() => {
+          document.querySelectorAll('.animate-in').forEach((el, i) => {
+            setTimeout(() => el.classList.add('visible'), i * 100);
+          });
+
+          // Animate progress fills and breakdown bars
+          document.querySelectorAll('[data-width]').forEach((el) => {
+            setTimeout(() => {
+              el.style.width = el.getAttribute('data-width');
+            }, 400);
+          });
+        }, 100);
+      }
+
+      // ── Stats HTML builder ────────────────────────────────────────
+      function buildStatsHtml(key, stats) {
+        const items = [];
+        switch (key) {
+          case 'security':
+            items.push(
+              { label: 'Total Findings',  value: stats.totalFindings },
+              { label: 'Remediated',      value: stats.remediated, color: 'var(--accent-emerald)' },
+              { label: 'Open Issues',     value: stats.open, color: stats.open > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' },
+              { label: 'Critical Open',   value: stats.critical, color: stats.critical > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' },
+            );
+            break;
+          case 'content':
+            items.push(
+              { label: 'Total Courses',   value: stats.totalCourses },
+              { label: 'Published',       value: `${stats.publishedCourses} <span class="unit">(${stats.publishRatio}%)</span>` },
+              { label: 'Total Lessons',   value: stats.totalLessons },
+              { label: 'Assessments',     value: stats.totalAssessments },
+            );
+            break;
+          case 'engagement':
+            items.push(
+              { label: 'Total Users',     value: stats.totalUsers },
+              { label: 'Active (30d)',    value: `${stats.activeUsers30d} <span class="unit">(${stats.activeUserRate}%)</span>` },
+              { label: 'Enrollments',     value: stats.totalEnrollments },
+              { label: 'Completion Rate', value: `${stats.completionRate}<span class="unit">%</span>`, color: stats.completionRate >= 60 ? 'var(--accent-emerald)' : 'var(--accent-amber)' },
+            );
+            break;
+          case 'performance':
+            items.push(
+              { label: 'AI Status',       value: stats.aiEnabled ? '✅ Active' : '❌ Off' },
+              { label: 'Maintenance',     value: stats.maintenanceMode ? '⚠️ On' : '✅ Off' },
+              { label: 'AI Guidelines',   value: stats.activeGuidelines },
+              { label: 'Live Sessions',   value: stats.totalSessions },
+            );
+            break;
+        }
+
+        return items.map((item) => `
+          <div class="stat-item">
+            <div class="stat-label">${item.label}</div>
+            <div class="stat-value" ${item.color ? `style="color:${item.color}"` : ''}>${item.value}</div>
+          </div>
+        `).join('');
+      }
+
+      // ── Findings table ────────────────────────────────────────────
+      function renderFindings(security) {
+        const section = document.getElementById('findings-section');
+        const stats = security.stats;
+        const findings = security.findings;
+
+        section.innerHTML = `
+          <div class="findings-header">
+            <div class="findings-title">🔍 Security Findings Detail</div>
+            <div class="findings-badge-row">
+              <span class="findings-badge badge-critical">Critical: ${stats.critical}</span>
+              <span class="findings-badge badge-high">High: ${stats.high}</span>
+              <span class="findings-badge badge-medium">Medium: ${stats.medium}</span>
+              <span class="findings-badge badge-remediated">Remediated: ${stats.remediated}</span>
+            </div>
+          </div>
+          <table class="findings-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Finding</th>
+                <th>Severity</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${findings.map((f) => `
+                <tr>
+                  <td><span class="finding-id">${f.id}</span></td>
+                  <td>${f.title}</td>
+                  <td><span class="severity-pill pill-${f.severity}">${f.severity}</span></td>
+                  <td style="color:var(--text-secondary)">${f.category}</td>
+                  <td>
+                    <span class="status-chip ${f.remediated ? 'status-remediated' : 'status-open'}">
+                      <span class="status-dot"></span>
+                      ${f.remediated ? 'Fixed' : 'Open'}
+                    </span>
+                  </td>
+                  <td><span class="finding-notes">${f.notes}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `;
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -31,6 +31,7 @@ import userRoutes from './routes/users.js';
 import adminRoutes from './routes/admin.js';
 import dataRoutes from './routes/data.js';
 import notificationRoutes from './routes/notifications.js';
+import auditRoutes from './routes/audit.js';
 import { startCalendarReminderScheduler } from './services/calendarNotifications.js';
 import { startMaintenanceScheduler } from './services/maintenance.js';
 import { errorHandler, notFound } from './middleware/errorHandler.js';
@@ -233,6 +234,7 @@ function mountRouters(prefix = '') {
   app.use(prefix, adminRoutes);
   app.use(prefix, dataRoutes);
   app.use(prefix, notificationRoutes);
+  app.use(prefix, auditRoutes);
 }
 
 // Mount under /v1 (primary for frontend), /api, and root
