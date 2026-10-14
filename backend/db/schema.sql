@@ -353,6 +353,13 @@ CREATE TABLE IF NOT EXISTS ai_quiz_keys (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_ai_quiz_keys_created ON ai_quiz_keys(created_at);
+-- F-06: a quiz belongs to the user who generated it, is graded once (graded_result is the
+-- authoritative score), and each graded quiz can be claimed by a single task_id.
+ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS graded_at TIMESTAMPTZ;
+ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS graded_result JSONB;
+ALTER TABLE ai_quiz_keys ADD COLUMN IF NOT EXISTS claimed_task_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_ai_quiz_keys_user ON ai_quiz_keys(user_id, graded_at DESC);
 
 -- Chat Sessions Table
 CREATE TABLE IF NOT EXISTS chat_sessions (

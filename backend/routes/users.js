@@ -289,6 +289,10 @@ router.patch('/:id/profile', authenticate, updateProfileHandler);
 // GET /:id/results
 router.get('/:id/results', authenticate, async (req, res, next) => {
   try {
+    // F-05: a student may only read their own quiz results; admins may read any.
+    if (req.user.role !== 'admin' && String(req.user.id) !== String(req.params.id)) {
+      return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'You cannot view these results.' } });
+    }
     const results = await query(
       `SELECT qr.*, a.title as task_title
        FROM quiz_results qr

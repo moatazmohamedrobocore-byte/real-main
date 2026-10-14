@@ -9,6 +9,9 @@ import { retrieveChunks, formatContext } from '../services/retrieve.js';
 const router = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// F-20: upper bound for one tutor chat message (the JSON body limit is 1 MB; this keeps
+// LLM cost and stored history bounded).
+const CHAT_MESSAGE_MAX_CHARS = 4000;
 // The frontend sometimes passes agent names ("general") or "undefined" as courseId;
 // only real UUIDs may hit UUID-typed columns.
 const safeCourseId = (value) => (typeof value === 'string' && UUID_RE.test(value) ? value : null);
@@ -109,7 +112,8 @@ router.delete('/data/projects/:id', authenticate, requireRoles('admin'), async (
 });
 
 // GET /data/assets
-router.get('/data/assets', authenticate, async (_req, res, next) => {
+// F-13: the asset inventory spans every course (drafts included), so it is admin-only.
+router.get('/data/assets', authenticate, requireRoles('admin'), async (_req, res, next) => {
   try {
     const result = await query(
       `SELECT da.*, c.title as course_title
@@ -231,8 +235,10 @@ async function uploadHandler(req, res, next) {
   }
 }
 
-router.post('/upload', authenticate, upload.single('file'), uploadHandler);
-router.post('/data/upload/:fileOrId', authenticate, upload.single('file'), uploadHandler);
+// F-13: only admins may add course materials. The role check runs BEFORE multer so a
+// rejected caller's file is never written to disk.
+router.post('/upload', authenticate, requireRoles('admin'), upload.single('file'), uploadHandler);
+router.post('/data/upload/:fileOrId', authenticate, requireRoles('admin'), upload.single('file'), uploadHandler);
 
 // POST /data/process/:courseId and POST /courses/:courseId/ai/materials
 // Really extracts text from each uploaded asset, chunks it, and stores it in
@@ -257,11 +263,12 @@ async function processFilesHandler(req, res, next) {
     next(err);
   }
 }
-router.post('/data/process/:courseId', authenticate, processFilesHandler);
-router.post('/courses/:courseId/ai/materials', authenticate, processFilesHandler);
+// Indexing feeds course materials into the tutor/quiz prompts, so it is admin-only too.
+router.post('/data/process/:courseId', authenticate, requireRoles('admin'), processFilesHandler);
+router.post('/courses/:courseId/ai/materials', authenticate, requireRoles('admin'), processFilesHandler);
 
 // POST /nlp/index/push/:id — indexes the course's assets and reports the real chunk count.
-router.post('/nlp/index/push/:id', authenticate, async (req, res, next) => {
+router.post('/nlp/index/push/:id', authenticate, requireRoles('admin'), async (req, res, next) => {
   try {
     const courseId = safeCourseId(req.params.id);
     if (!courseId) {
@@ -280,7 +287,25 @@ async function chatHandler(req, res, next) {
     const { message, session_id } = req.body || {};
     const courseId = safeCourseId(req.params.courseId);
 
+    // F-20: reject empty / non-string / oversized messages before any DB write or LLM call.
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: { code: 'INVALID_INPUT', message: 'A non-empty message is required.' } });
+    }
+    if (message.length > CHAT_MESSAGE_MAX_CHARS) {
+      return res.status(400).json({ error: { code: 'MESSAGE_TOO_LONG', message: `Messages are limited to ${CHAT_MESSAGE_MAX_CHARS} characters.` } });
+    }
+
     let sessionId = session_id;
+    if (sessionId) {
+      // F-07: a supplied session must exist AND belong to the caller. 404 (not 403) so a
+      // foreign session id cannot be probed for existence.
+      const owned = UUID_RE.test(String(sessionId))
+        ? await query('SELECT id FROM chat_sessions WHERE id = $1 AND user_id = $2', [sessionId, req.user.id])
+        : { rows: [] };
+      if (owned.rows.length === 0) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Chat session not found.' } });
+      }
+    }
     if (!sessionId) {
       const sessRes = await query(
         'INSERT INTO chat_sessions (user_id, course_id) VALUES ($1, $2) RETURNING id',
@@ -465,15 +490,15 @@ correctIndex is the 0-based integer index of the correct option. IMPORTANT: Rand
 
     // Persist the answer key server-side (never returned to the browser) so grading
     // survives a restart. Swept after the TTL.
-    const quizId = `aiq-${crypto.randomUUID().slice(0, 8)}`;
+    const quizId = `aiq-${crypto.randomUUID()}`;
     await query(
-      `INSERT INTO ai_quiz_keys (quiz_id, course_id, topic, questions)
-       VALUES ($1, $2, $3, $4)`,
+      `INSERT INTO ai_quiz_keys (quiz_id, course_id, topic, questions, user_id)
+       VALUES ($1, $2, $3, $4, $5)`,
       [quizId, courseId, topic, JSON.stringify(quizQuestions.map((q) => ({
         id: q.id,
         correctIndex: q.correctIndex,
         explanation: q.explanation || ''
-      })))]
+      }))), req.user.id]
     );
     sweepAiQuizKeys();
 
@@ -500,13 +525,20 @@ router.post('/agent/quiz/:courseId', authenticate, generateQuizHandler);
 // score without ever exposing the answer key to the client.
 router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) => {
   try {
+    // F-06: the quiz must belong to the caller (legacy rows without an owner stay gradable),
+    // and it is graded exactly once. The first submission is the authoritative score; later
+    // calls replay it, so a student cannot learn the key and then re-grade with perfect answers.
     const keyRes = await query(
-      `SELECT questions FROM ai_quiz_keys
-       WHERE quiz_id = $1 AND created_at >= now() - make_interval(hours => $2)`,
-      [req.params.quizId, AI_QUIZ_TTL_HOURS]
+      `SELECT questions, graded_result FROM ai_quiz_keys
+       WHERE quiz_id = $1 AND (user_id IS NULL OR user_id = $2)
+         AND created_at >= now() - make_interval(hours => $3)`,
+      [req.params.quizId, req.user.id, AI_QUIZ_TTL_HOURS]
     );
     if (keyRes.rows.length === 0) {
       return res.status(404).json({ error: { code: 'QUIZ_NOT_FOUND', message: 'Quiz expired or not found; please generate a new one.' } });
+    }
+    if (keyRes.rows[0].graded_result) {
+      return res.json(keyRes.rows[0].graded_result);
     }
     const entry = { questions: keyRes.rows[0].questions };
     const raw = (req.body && req.body.answers) || {};
@@ -527,8 +559,20 @@ router.post('/ai/quizzes/:quizId/grade', authenticate, async (req, res, next) =>
     });
     const total = entry.questions.length;
     const percentage = total > 0 ? Math.round((correct / total) * 100) : 0;
+    const payload = { success: true, quizId: req.params.quizId, correct, total, score: percentage, detail };
 
-    res.json({ success: true, quizId: req.params.quizId, correct, total, score: percentage, detail });
+    // Compare-and-set so two concurrent first submissions cannot both become authoritative.
+    const stored = await query(
+      `UPDATE ai_quiz_keys SET user_id = $2, graded_at = now(), graded_result = $3
+       WHERE quiz_id = $1 AND graded_result IS NULL
+       RETURNING graded_result`,
+      [req.params.quizId, req.user.id, JSON.stringify(payload)]
+    );
+    if (stored.rows.length === 0) {
+      const again = await query('SELECT graded_result FROM ai_quiz_keys WHERE quiz_id = $1', [req.params.quizId]);
+      return res.json(again.rows[0]?.graded_result || payload);
+    }
+    res.json(payload);
   } catch (err) {
     next(err);
   }
@@ -589,17 +633,35 @@ router.get('/agent/quizzes/:id', authenticate, async (req, res, next) => {
 });
 
 // POST /agent/quizzes/results
+// F-06: the score is NEVER taken from the client. It comes from the caller's own
+// server-graded AI quiz (POST /ai/quizzes/:quizId/grade). Each graded quiz can be claimed
+// by one task_id, so one good result cannot be replayed across several tasks. The client's
+// `score`, `total` and `student_id` fields are ignored.
 router.post('/agent/quizzes/results', authenticate, async (req, res, next) => {
   try {
-    const { task_id, score, total, answers } = req.body || {};
-    // F-06: identity is always the authenticated user; a client-supplied student_id is ignored
-    // so nobody can record or inflate another student's score. Authoritative grading for AI
-    // quizzes happens server-side in POST /ai/quizzes/:quizId/grade; this only tracks completion.
-    const studentId = req.user.id;
-    const t = Number.isFinite(Number(total)) && Number(total) > 0 ? Math.min(1000, Math.floor(Number(total))) : 5;
-    let s = Number(score);
-    if (!Number.isFinite(s)) s = 0;
-    s = Math.max(0, Math.min(t, Math.round(s))); // clamp 0..total; never exceed the configured max
+    const { task_id, quiz_id, answers } = req.body || {};
+    const taskId = String(task_id || 'general-task').slice(0, 200);
+    const quizId = typeof quiz_id === 'string' && quiz_id ? quiz_id.slice(0, 64) : null;
+
+    const claimed = await query(
+      `UPDATE ai_quiz_keys SET claimed_task_id = $2
+       WHERE quiz_id = (
+         SELECT quiz_id FROM ai_quiz_keys
+         WHERE user_id = $1 AND graded_at IS NOT NULL
+           AND (claimed_task_id IS NULL OR claimed_task_id = $2)
+           AND ($3::text IS NULL OR quiz_id = $3)
+         ORDER BY graded_at DESC LIMIT 1
+         FOR UPDATE SKIP LOCKED)
+       RETURNING graded_result`,
+      [req.user.id, taskId, quizId]
+    );
+    if (claimed.rows.length === 0) {
+      return res.status(409).json({ error: { code: 'NO_GRADED_QUIZ', message: 'Complete and submit a quiz for grading before recording a result.' } });
+    }
+    const graded = claimed.rows[0].graded_result;
+    const t = Math.max(1, Math.floor(Number(graded.total) || 1));
+    const s = Math.max(0, Math.min(t, Math.floor(Number(graded.correct) || 0)));
+    const safeAnswers = JSON.stringify(answers || {}).length <= 50000 ? answers || {} : {};
 
     const result = await query(
       `INSERT INTO quiz_results (student_id, task_id, score, total, answers)
@@ -607,7 +669,7 @@ router.post('/agent/quizzes/results', authenticate, async (req, res, next) => {
        ON CONFLICT (student_id, task_id)
        DO UPDATE SET score = EXCLUDED.score, total = EXCLUDED.total, answers = EXCLUDED.answers
        RETURNING *`,
-      [studentId, String(task_id || 'general-task').slice(0, 200), s, t, JSON.stringify(answers || {})]
+      [req.user.id, taskId, s, t, JSON.stringify(safeAnswers)]
     );
 
     res.json({ success: true, result: result.rows[0] });
