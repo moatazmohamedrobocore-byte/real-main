@@ -36,15 +36,13 @@ export async function retrieveChunks(courseId, queryText, { k = 5 } = {}) {
     .filter((r) => r.score > 0.05);
 }
 
-// Build a compact, citation-bearing context block for an LLM system prompt.
-// Returns '' when there is nothing indexed so callers can skip cleanly.
 export function formatContext(chunks) {
   if (!Array.isArray(chunks) || chunks.length === 0) return '';
-  const parts = chunks.map((c, i) => {
-    const src = c.asset_name ? ` [source: ${c.asset_name}]` : '';
-    return `--- EXCERPT ${i + 1}${src} ---\n${String(c.content).slice(0, 1600)}`;
+  return JSON.stringify({
+    course_materials: chunks.map((c) => ({
+      source: c.asset_name || '',
+      chunk_index: c.chunk_index,
+      content: String(c.content).slice(0, 1600)
+    }))
   });
-  return `\n\nUse the following course-material excerpts as your primary grounding. ` +
-    `Cite the source name when you rely on one. If the answer is not in the excerpts, ` +
-    `say so rather than inventing details.\n\n${parts.join('\n\n')}`;
 }

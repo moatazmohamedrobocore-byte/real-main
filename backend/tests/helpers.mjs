@@ -23,6 +23,13 @@ function deriveTestDatabaseUrl() {
   return m[1].trim().replace(/\/real_i(\?|$)/, '/real_i_test$1');
 }
 export const TEST_DATABASE_URL = deriveTestDatabaseUrl();
+const testTarget = new URL(TEST_DATABASE_URL);
+const testConnection = new pg.Client({ connectionString: TEST_DATABASE_URL }).connectionParameters;
+if (!['postgres:', 'postgresql:'].includes(testTarget.protocol)
+    || !['localhost', '127.0.0.1', '::1'].includes(testConnection.host)
+    || testConnection.database !== 'real_i_test') {
+  throw new Error('Tests require a local real_i_test database; refusing an unsafe database target.');
+}
 
 let fixturePool;
 export function db() {
@@ -32,6 +39,8 @@ export function db() {
 
 // Wipe all data tables for a clean, isolated run (test DB only).
 export async function resetDb() {
+  const target = await db().query('SELECT current_database() AS name');
+  if (target.rows[0].name !== 'real_i_test') throw new Error('Refusing to reset a non-test database.');
   await db().query(`
     DO $$ DECLARE r RECORD; BEGIN
       FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
@@ -42,7 +51,7 @@ export async function resetDb() {
 }
 
 let child;
-export async function startServer() {
+export async function startServer(overrides = {}) {
   const env = {
     ...process.env,
     NODE_ENV: 'test',
@@ -52,9 +61,11 @@ export async function startServer() {
     JWT_REFRESH_SECRET: TEST_JWT_REFRESH,
     JWT_SECRET: TEST_JWT_ACCESS,
     CORS_ORIGIN: '',
-    CHAT_RETENTION_DAYS: '0'
+    CHAT_RETENTION_DAYS: '0',
+    GROQ_API_KEY: '',
+    ...overrides
   };
-  child = spawn('node', ['server.js'], { cwd: BACKEND_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(process.execPath, ['server.js'], { cwd: BACKEND_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const pipe = (stream, tag) => stream.on('data', (d) => { if (process.env.TEST_VERBOSE) process.stderr.write(`[${tag}] ${d}`); });
   pipe(child.stdout, 'server');
   pipe(child.stderr, 'server:err');
@@ -72,7 +83,16 @@ export async function startServer() {
 }
 
 export async function stopServer() {
-  if (child) { try { child.kill('SIGTERM'); } catch {} child = null; }
+  if (child) {
+    const server = child;
+    child = null;
+    if (server.exitCode === null && server.signalCode === null) {
+      await new Promise((resolve) => {
+        server.once('exit', resolve);
+        server.kill('SIGTERM');
+      });
+    }
+  }
   if (fixturePool) { await fixturePool.end().catch(() => {}); fixturePool = null; }
 }
 

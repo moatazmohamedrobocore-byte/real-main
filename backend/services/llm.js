@@ -34,3 +34,11 @@ export async function getGroqClient() {
   const Groq = (await import('groq-sdk')).default;
   return new Groq({ apiKey: key });
 }
+
+export function providerUnavailable() {
+  return Object.assign(new Error('AI service is temporarily unavailable. Please try again later.'), {
+    status: 503,
+    code: 'AI_UNAVAILABLE',
+    expose: true
+  });
+}

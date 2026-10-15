@@ -121,9 +121,10 @@ async function listCourses(req, res, next) {
     const formatted = result.rows.map((row) => {
       const enrollment = userEnrollments.find((e) => String(e.course_id) === String(row.id));
       const userCompleted = completedLessons.filter((p) => String(p.course_id) === String(row.id)).map((p) => String(p.lesson_id));
-      const fc = formatCourse(row, row.lessons || [], enrollment, userCompleted);
+      const lessons = (row.lessons || []).filter((lesson) => isStaff || lesson.status === 'published');
+      const fc = formatCourse(row, lessons, enrollment, userCompleted);
       // F-02: never ship full lesson bodies in the catalog unless the caller may access them.
-      const canSeeContent = isStaff || (enrollment && enrollment.status === 'enrolled');
+      const canSeeContent = isStaff || ['enrolled', 'completed'].includes(enrollment?.status);
       if (!canSeeContent) fc.lessons = fc.lessons.map((l) => { const { content, ...rest } = l; return rest; });
       return fc;
     });
@@ -153,9 +154,13 @@ router.get('/:id', authenticateOptional, async (req, res, next) => {
     }
 
     const course = courseRes.rows[0];
+    const isAdmin = req.user?.role === 'admin';
+    if (!isAdmin && course.status !== 'published') {
+      return res.status(404).json({ error: { code: 'COURSE_NOT_FOUND', message: 'Course not found.' } });
+    }
     const lessonsRes = await query(
-      'SELECT * FROM lessons WHERE course_id = $1 ORDER BY position ASC',
-      [course.id]
+      "SELECT * FROM lessons WHERE course_id = $1 AND ($2 OR status = 'published') ORDER BY position ASC",
+      [course.id, isAdmin]
     );
 
     let userEnrollment = null;
@@ -167,7 +172,12 @@ router.get('/:id', authenticateOptional, async (req, res, next) => {
       completedLessonIds = progRes.rows.map((p) => String(p.lesson_id));
     }
 
-    res.json(formatCourse(course, lessonsRes.rows, userEnrollment, completedLessonIds));
+    const formatted = formatCourse(course, lessonsRes.rows, userEnrollment, completedLessonIds);
+    const canSeeContent = isAdmin || ['enrolled', 'completed'].includes(userEnrollment?.status);
+    if (!canSeeContent) {
+      formatted.lessons = formatted.lessons.map(({ content, ...lesson }) => lesson);
+    }
+    res.json(formatted);
   } catch (err) {
     next(err);
   }

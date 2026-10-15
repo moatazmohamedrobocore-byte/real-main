@@ -77,10 +77,13 @@ test('F-07: cannot post into another user\'s chat session; own session works', a
   const { courseId } = await courseWithQuiz(admin);
   const owner = await makeUser('student');
   const intruder = await makeUser('student');
+  for (const user of [owner, intruder]) {
+    await api(`/courses/${courseId}/enroll/${user.id}`, { method: 'POST', token: admin.token });
+  }
 
   const first = await api(`/courses/${courseId}/ai/chat`, { method: 'POST', token: owner.token, body: { message: 'my private question' } });
-  assert.equal(first.status, 200, JSON.stringify(first.body));
-  const sid = first.body.session_id;
+  assert.equal(first.status, 503, 'unconfigured AI returns an explicit service failure');
+  const sid = (await db().query('SELECT id FROM chat_sessions WHERE user_id = $1 AND course_id = $2', [owner.id, courseId])).rows[0].id;
   const countMsgs = async () => Number((await db().query('SELECT count(*) FROM chat_messages WHERE session_id = $1', [sid])).rows[0].count);
   const before = await countMsgs();
 
@@ -92,7 +95,7 @@ test('F-07: cannot post into another user\'s chat session; own session works', a
   assert.equal(bogus.status, 404, 'malformed session id is 404, not a 500');
 
   const own = await api(`/courses/${courseId}/ai/chat`, { method: 'POST', token: owner.token, body: { message: 'follow up', session_id: sid } });
-  assert.equal(own.status, 200);
+  assert.equal(own.status, 503, 'owner reaches the unconfigured provider');
   assert.ok(await countMsgs() > before, 'owner can continue their own session');
 });
 
@@ -137,8 +140,10 @@ test('F-20: chat rejects empty, non-string and oversized messages', async () => 
   const sessionsAfter = Number((await db().query('SELECT count(*) FROM chat_sessions WHERE user_id = $1', [stu.id])).rows[0].count);
   assert.equal(sessionsAfter, sessionsBefore, 'rejected messages must not create sessions');
 
+  await api(`/courses/${courseId}/enroll/${stu.id}`, { method: 'POST', token: admin.token });
   const edge = await api(`/courses/${courseId}/ai/chat`, { method: 'POST', token: stu.token, body: { message: 'A'.repeat(4000) } });
-  assert.equal(edge.status, 200, 'a message at the limit is accepted');
+  assert.equal(edge.status, 503, 'a message at the limit reaches the unconfigured provider');
+  assert.equal(edge.body.error.code, 'AI_UNAVAILABLE');
 });
 
 test('F-06: AI quizzes are graded once, owner-only; the first grade is the authoritative score', async () => {
