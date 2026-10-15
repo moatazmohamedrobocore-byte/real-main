@@ -116,3 +116,26 @@ An already-`live` session is still reused/joined on sidebar click (expected "res
 
 `backend/server.js` serves `StudentQuiz-*.js` with `Cache-Control: no-cache` (it keeps its old hash). Clients that
 already cached the old file need one hard refresh.
+
+---
+
+## F-18 — profile password change must prove the current password
+
+Reproducible with: `node frontend-patches/patch-profile-current-password.mjs` (anchored string
+replacements; the script throws if any anchor is not found exactly once, so it cannot half-apply).
+
+| File | Change (before → after) | Why | Verified |
+|---|---|---|---|
+| `StudentProfile-9TawEEYy.js` | (1) form state gains `currentPassword:''`; (2) submit guard `k.newPassword&&…!==k.confirmPassword` → `k.newPassword&&!k.currentPassword){toast('Enter your current password to set a new one');return}if(…mismatch check)`; (3) payload `k.newPassword&&(t.password=k.newPassword)` → also sends `t.currentPassword=k.currentPassword`; (4) success reset clears `currentPassword`; (5) a `Current Password` input (`name:currentPassword`, `autoComplete:current-password`) is rendered before `New Password` in the Security grid | The backend now refuses a self-service password change without proof of the old one; this chunk kept a `currentPassword` state key but rendered no field for it and never sent it, so the admin/student password change would have failed with an opaque toast | ✅ `node --check`; browser click-through on `/student/profile` |
+| `AdminProfile-YsL5zDb7.js` | same guard + payload + rendered input (state already carried `currentPassword`) | Same F-18 contract on the admin profile page | ✅ `node --check`; rendered field confirmed |
+
+`backend/server.js` now revalidates `StudentProfile-*` and `AdminProfile-*` as well
+(`IN_PLACE_PATCHED_ASSETS`), so returning users pick the patched chunks up instead of the
+immutable-cached originals.
+
+**Backend counterpart:** `users.js` `updateProfileHandler` requires `currentPassword` for a
+self password change (401 on a wrong one), validates name/avatar/password through the shared
+validators, and calls `revokeUserSessions()` on any password change; `updateRoleHandler` revokes
+the target's sessions too. `middleware/auth.js` enforces a per-user `tokens_valid_after`
+watermark on every access token, and `POST /auth/reset-password` now uses the same revocation.
+Covered by `backend/tests/f18-account-security.test.mjs` (8 tests).

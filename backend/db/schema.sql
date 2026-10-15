@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar        TEXT DEFAULT NULL,
   last_login_at TIMESTAMPTZ,
   deleted_at    TIMESTAMPTZ DEFAULT NULL,
+  tokens_valid_after TIMESTAMPTZ DEFAULT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -22,6 +23,8 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 UPDATE users SET role = 'admin' WHERE role = 'instructor';
 ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('student', 'admin'));
+-- F-18: all access tokens issued before this instant are invalid (password/role change).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tokens_valid_after TIMESTAMPTZ DEFAULT NULL;
 
 -- Refresh Tokens
 CREATE TABLE IF NOT EXISTS refresh_tokens (

@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import { query } from '../db/pool.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, revokeUserSessions } from '../middleware/auth.js';
 import { validateEmail, validateName, validatePassword, send400 } from '../middleware/validate.js';
 import { getAccessSecret, getRefreshSecret } from '../config/secrets.js';
 
@@ -367,8 +367,9 @@ router.post('/reset-password', async (req, res, next) => {
     // Mark OTP as used
     await query('UPDATE password_resets SET used_at = now() WHERE id = $1', [resetRow.id]);
 
-    // Optional: revoke all existing sessions to force re-login
-    await query('UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [user.id]);
+    // F-18: signing out every session is mandatory here, not optional — an OTP reset must not
+    // leave the attacker's already-issued tokens alive.
+    await revokeUserSessions(user.id);
 
     res.status(200).json({ message: 'Password has been reset successfully.' });
   } catch (err) {

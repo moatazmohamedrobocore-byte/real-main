@@ -1,8 +1,14 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Router } from 'express';
 import { query } from '../db/pool.js';
+import pool from '../db/pool.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
+import { getAccessSecret, getRefreshSecret, getJitsiSecret } from '../config/secrets.js';
 
 const router = Router();
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -31,25 +37,131 @@ function severityWeight(severity) {
   }
 }
 
-// ─── Static security findings from the documented audit ─────────────────────
-// These correspond 1:1 to docs/security-hardening-audit.md.
-// `remediated` is computed dynamically below where possible.
+// ─── Security findings: catalog + evidence-driven status ────────────────────
+// IDs follow the production-readiness remediation brief (F-01..F-25), which is the
+// numbering used by the merged remediation PRs, the commit messages and the regression
+// tests in backend/tests/. (docs/security-hardening-audit.md numbers its findings #1..#13
+// independently — do not mix the two.)
+//
+// A finding is only reported as closed when there is evidence:
+//   test   -> a regression test whose title names the finding
+//   runtime-> a check evaluated against this live process's configuration
+// Everything else is 'open', or 'partial' when evidence exists but the brief's scope
+// for that finding is not fully met (the remaining work is stated in `residual`).
 
-const SECURITY_FINDINGS = [
-  { id: 'F-01', title: 'AI quizzes return answer key to student',        severity: 'critical', category: 'Data Exposure' },
-  { id: 'F-02', title: 'Assessment questions exposed without enrollment', severity: 'critical', category: 'Access Control' },
-  { id: 'F-03', title: 'Quiz scores writable for any student',           severity: 'critical', category: 'Access Control' },
-  { id: 'F-04', title: 'Instructor reads leak learner emails',           severity: 'critical', category: 'Privacy' },
-  { id: 'F-05', title: 'Non-owner instructor can archive any course',    severity: 'high',     category: 'Access Control' },
-  { id: 'F-06', title: 'Uploaded documents world-readable',              severity: 'high',     category: 'Data Exposure' },
-  { id: 'F-07', title: 'CORS accepts any origin with credentials',       severity: 'high',     category: 'Network' },
-  { id: 'F-08', title: 'No rate limiting or helmet',                     severity: 'high',     category: 'Network' },
-  { id: 'F-09', title: 'Direct submission awards perfect score',         severity: 'medium',   category: 'Data Integrity' },
-  { id: 'F-10', title: 'Draft content visible to all users',             severity: 'medium',   category: 'Access Control' },
-  { id: 'F-11', title: 'Provider error text reaches learners',           severity: 'medium',   category: 'Data Exposure' },
-  { id: 'F-12', title: 'Raw error objects logged',                       severity: 'medium',   category: 'Observability' },
-  { id: 'F-13', title: 'Session deletion not ownership-checked',         severity: 'medium',   category: 'Access Control' },
+const SECURITY_CATALOG = [
+  { id: 'F-01', title: 'Assessment submission workflow: started attempts recorded as submitted; submit path 500s', severity: 'critical', category: 'Data Integrity' },
+  { id: 'F-02', title: 'Unpublished courses/lessons and lesson bodies visible to non-staff',                      severity: 'critical', category: 'Access Control' },
+  { id: 'F-03', title: 'Assessment answer keys returned in student-facing payloads',                             severity: 'critical', category: 'Data Exposure' },
+  { id: 'F-04', title: 'Students can start or submit unpublished assessments / courses they did not join',        severity: 'critical', category: 'Access Control' },
+  { id: 'F-05', title: 'Cross-user reads of attempts, results and completed-quiz history (IDOR)',                 severity: 'high',     category: 'Access Control' },
+  { id: 'F-06', title: 'Quiz results forgeable: client-supplied student id and score',                           severity: 'critical', category: 'Data Integrity' },
+  { id: 'F-07', title: 'AI chat sessions readable, writable or deletable by non-owners',                         severity: 'high',     category: 'Access Control' },
+  { id: 'F-08', title: 'Video/refresh tokens accepted as API access tokens; JWT algorithm unpinned',              severity: 'critical', category: 'Access Control' },
+  { id: 'F-09', title: 'No server-enforced time limit or due date; expired attempts still submittable',           severity: 'high',     category: 'Data Integrity' },
+  { id: 'F-10', title: 'Grading correctness: multi-select partial credit, open-ended auto-scored 0, uncapped',     severity: 'high',     category: 'Data Integrity' },
+  { id: 'F-11', title: 'Logout does not revoke the refresh-token family',                                        severity: 'medium',   category: 'Session Security' },
+  { id: 'F-12', title: 'Login throttling bypass via non-normalised rate-limit keys; no per-IP cap',               severity: 'high',     category: 'Network' },
+  { id: 'F-13', title: 'Uploads, asset inventory and indexing available to non-admins',                           severity: 'high',     category: 'Access Control' },
+  { id: 'F-14', title: 'Stored files served with uploader-controlled content type (inline execution)',            severity: 'medium',   category: 'Data Exposure' },
+  { id: 'F-15', title: 'Paid courses self-enrollable without a payment entitlement',                             severity: 'high',     category: 'Business Logic' },
+  { id: 'F-17', title: 'AI engine hardening: provider timeouts/retries, output schema validation, eval harness',   severity: 'medium',   category: 'AI Safety' },
+  { id: 'F-18', title: 'Password change without current-password proof; sessions not revoked; self role escalation',severity: 'high',   category: 'Account Security' },
+  { id: 'F-19', title: 'Join tokens share the API signing secret (distinct purpose needs distinct key)',          severity: 'medium',   category: 'Session Security' },
+  { id: 'F-20', title: 'Chat input unvalidated (empty, non-string, oversized messages)',                         severity: 'medium',   category: 'AI Safety' },
+  { id: 'F-21', title: 'No consistent request schema-validation layer',                                          severity: 'medium',   category: 'Robustness' },
+  { id: 'F-22', title: 'Health endpoint detail exposure; seeds and dev credentials reachable in production',       severity: 'low',      category: 'Configuration' },
+  { id: 'F-25', title: 'Production DB TLS verification disabled; unused/vulnerable deps; committed debris',        severity: 'high',     category: 'Configuration' },
 ];
+
+// Referenced by the brief's "F-01 through F-25" range but never defined in it.
+const UNMAPPED_IDS = ['F-16', 'F-23', 'F-24'];
+
+// Where evidence exists but the brief's scope for that finding is not fully met.
+const RESIDUAL_WORK = {
+  'F-13': 'Upload permissions and admin-only inventory/indexing are tested, but uploaded bytes are still not content-sniffed against their claimed type, and deleting an asset record does not delete its stored file.',
+  'F-14': 'Submission files are force-downloaded unless the extension is inert, but /uploads is still served with extension-derived types, so an admin-uploaded .html or .svg can execute in the application origin for signed-in users.'
+};
+
+function collectTestEvidence() {
+  const testsDir = path.join(HERE, '..', 'tests');
+  const byFinding = new Map();
+  let files = [];
+  try {
+    files = fs.readdirSync(testsDir).filter((f) => f.endsWith('.test.mjs'));
+  } catch {
+    return { byFinding, available: false, fileCount: 0 };
+  }
+  for (const file of files) {
+    let src;
+    try {
+      src = fs.readFileSync(path.join(testsDir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    for (const m of src.matchAll(/\b(?:test|it)\s*\(\s*[`'"]([^`'"]{3,300})[`'"]/g)) {
+      const title = m[1];
+      for (const id of title.match(/F-\d{2}/g) || []) {
+        if (!byFinding.has(id)) byFinding.set(id, []);
+        byFinding.get(id).push({ file, title });
+      }
+    }
+  }
+  return { byFinding, available: true, fileCount: files.length };
+}
+
+function runtimeChecks() {
+  const access = getAccessSecret();
+  const refresh = getRefreshSecret();
+  const jitsi = getJitsiSecret();
+  const secretsDistinct = access !== refresh && jitsi !== access && jitsi !== refresh;
+  const ssl = pool.options && pool.options.ssl;
+  const tlsVerified = process.env.NODE_ENV !== 'production'
+    ? null
+    : Boolean(ssl) && ssl.rejectUnauthorized !== false;
+  return {
+    'F-08': secretsDistinct
+      ? { ok: true, note: 'Live check: access, refresh and join-token signing keys are three distinct values.' }
+      : { ok: false, note: 'Live check FAILED: token purposes share a signing key.' },
+    'F-19': secretsDistinct
+      ? { ok: true, note: 'Live check: Jitsi join tokens are signed with a key separate from the API tokens.' }
+      : { ok: false, note: 'Live check FAILED: join token shares an API signing key.' },
+    'F-25': tlsVerified === null
+      ? { ok: false, note: 'Not evaluated (NODE_ENV is not production here).' }
+      : tlsVerified
+        ? { ok: true, note: 'Live check: production DB connection verifies the server certificate.' }
+        : { ok: false, note: 'Live check: production DB TLS is disabled or set to rejectUnauthorized=false.' }
+  };
+}
+
+function buildFindings(evidence, runtime) {
+  return SECURITY_CATALOG.map((f) => {
+    const tests = evidence.byFinding.get(f.id) || [];
+    const live = runtime[f.id];
+    const verifiedBy = [
+      ...tests.map((t) => `${t.file}: ${t.title}`),
+      ...(live && live.ok ? [live.note] : [])
+    ];
+    let status;
+    if (tests.length && live && !live.ok) status = 'partial';
+    else if (tests.length || (live && live.ok)) status = 'verified';
+    else status = 'open';
+    if (status === 'verified' && RESIDUAL_WORK[f.id]) status = 'partial';
+
+    return {
+      ...f,
+      status,
+      remediated: status === 'verified',
+      verifiedBy,
+      residual: RESIDUAL_WORK[f.id] || null,
+      notes: status === 'verified'
+        ? `Closed on evidence: ${tests.length} regression test(s)${live && live.ok ? ' + 1 live configuration check' : ''}.`
+        : status === 'partial'
+          ? (live && !live.ok ? live.note : RESIDUAL_WORK[f.id])
+          : (live && live.note ? live.note : 'No regression test and no live check proves closure.')
+    };
+  });
+}
 
 // ─── GET /admin/audit/rating ────────────────────────────────────────────────
 // Returns the full audit scorecard — security, content quality, user activity,
@@ -57,40 +169,19 @@ const SECURITY_FINDINGS = [
 
 router.get('/admin/audit/rating', authenticate, requireRoles('admin'), async (_req, res, next) => {
   try {
-    // ── 1. Dynamic security checks ──────────────────────────────────────
-    // Detect which hardening measures are actually in place by inspecting
-    // configuration and middleware artifacts rather than hard-coding.
+    // ── 1. Security: evidence-driven ────────────────────────────────────
+    const evidence = collectTestEvidence();
+    const runtime = runtimeChecks();
+    const findings = buildFindings(evidence, runtime);
 
-    const findings = SECURITY_FINDINGS.map((f) => {
-      // These can be extended to run real checks (e.g. test if /uploads
-      // requires auth, check if CORS is locked). For now, mark the ones
-      // we know are remediated by the current server.js code.
-      let remediated = false;
-      let notes = '';
-
-      switch (f.id) {
-        case 'F-06': // uploads — server.js now requires authenticate
-          remediated = true;
-          notes = 'Uploads served behind authenticate middleware (server.js:209).';
-          break;
-        case 'F-07': // CORS — server.js now uses allowlist
-          remediated = true;
-          notes = 'CORS locked to CORS_ORIGIN allowlist; production exits if unset (server.js:73-84).';
-          break;
-        case 'F-08': // helmet + rate limiting
-          remediated = true;
-          notes = 'Helmet enabled with CSP; rate limiters on auth, AI, forgot-password, and general routes (server.js:49-186).';
-          break;
-        default:
-          notes = 'Not yet remediated.';
-      }
-
-      return { ...f, remediated, notes };
-    });
-
-    const totalWeight = findings.reduce((s, f) => s + severityWeight(f.severity), 0);
-    const remediatedWeight = findings.filter((f) => f.remediated).reduce((s, f) => s + severityWeight(f.severity), 0);
-    const securityScore = Math.round((remediatedWeight / totalWeight) * 100);
+    const weight = (f) => severityWeight(f.severity);
+    const totalWeight = findings.reduce((s, f) => s + weight(f), 0);
+    // verified counts fully, partial counts half, open counts nothing.
+    const credited = findings.reduce(
+      (s, f) => s + (f.status === 'verified' ? weight(f) : f.status === 'partial' ? weight(f) * 0.5 : 0),
+      0
+    );
+    const securityScore = Math.round((credited / totalWeight) * 100);
 
     // ── 2. Content quality ──────────────────────────────────────────────
     const [coursesRes, lessonsRes, assessmentsRes, publishedRes] = await Promise.all([
@@ -186,14 +277,21 @@ router.get('/admin/audit/rating', authenticate, requireRoles('admin'), async (_r
           score: securityScore,
           grade: letterGrade(securityScore),
           weight: '35%',
+          scoring: 'severity-weighted; verified counts fully, partial half, open nothing',
+          evidence: {
+            testsAvailable: evidence.available,
+            testFilesScanned: evidence.fileCount,
+            unmappedFindingIds: UNMAPPED_IDS
+          },
           findings,
           stats: {
             totalFindings: findings.length,
-            remediated: findings.filter((f) => f.remediated).length,
-            open: findings.filter((f) => !f.remediated).length,
-            critical: findings.filter((f) => f.severity === 'critical' && !f.remediated).length,
-            high: findings.filter((f) => f.severity === 'high' && !f.remediated).length,
-            medium: findings.filter((f) => f.severity === 'medium' && !f.remediated).length,
+            remediated: findings.filter((f) => f.status === 'verified').length,
+            partial: findings.filter((f) => f.status === 'partial').length,
+            open: findings.filter((f) => f.status === 'open').length,
+            critical: findings.filter((f) => f.severity === 'critical' && f.status !== 'verified').length,
+            high: findings.filter((f) => f.severity === 'high' && f.status !== 'verified').length,
+            medium: findings.filter((f) => f.severity === 'medium' && f.status !== 'verified').length,
           },
         },
         content: {

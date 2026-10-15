@@ -260,8 +260,8 @@ if (fs.existsSync(path.join(webRoot, 'index.html'))) {
   // Hashed assets (e.g. index-BOtlBGmE.js) — cache for 1 year since the hash changes on rebuild
   // Bundles edited in place (see frontend-patches/patch-registry.md) keep their old content hash,
   // so they must be revalidated rather than cached as immutable, or returning users never see the fix.
-  const IN_PLACE_PATCHED_ASSETS = /^StudentQuiz-.*\.js$/;
-  app.use('/assets', express.static(path.join(webRoot, 'assets'), {
+  const IN_PLACE_PATCHED_ASSETS = /^(?:StudentQuiz|StudentProfile|AdminProfile)-.*\.js$/;
+  app.use(['/assets/quiz-reveal-v2', '/assets'], express.static(path.join(webRoot, 'assets'), {
     maxAge: '365d',
     immutable: true,
     setHeaders: (res, filePath) => {

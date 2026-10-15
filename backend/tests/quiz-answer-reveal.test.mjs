@@ -70,11 +70,30 @@ test('quiz answer reveal: owner-only, validated input, unknown question', async 
   assert.equal((await answer(owner.token, 'aiq-does-not-exist', { questionId: 'q1', selected: 0 })).status, 404);
 });
 
-test('the in-place patched quiz bundle is revalidated, other hashed assets stay immutable', async () => {
+test('the in-place patched bundles are revalidated, other hashed assets stay immutable', async () => {
   const get = (p) => fetch(`http://localhost:${TEST_PORT}${p}`);
   const quiz = await get('/assets/StudentQuiz-D7rIh7I4.js');
   if (quiz.status === 404) return; // frontend build not served in this environment
   assert.equal(quiz.headers.get('cache-control'), 'no-cache');
+  // F-18: the profile chunks were edited in place too, so they must revalidate as well.
+  for (const name of ['StudentProfile-9TawEEYy.js', 'AdminProfile-YsL5zDb7.js']) {
+    assert.equal((await get(`/assets/${name}`)).headers.get('cache-control'), 'no-cache', `${name} must not be immutable-cached`);
+  }
   const other = await get('/assets/api-DvVeKkjb.js');
   assert.match(other.headers.get('cache-control') || '', /immutable/);
+});
+
+test('versioned frontend URLs bypass previously immutable-cached quiz modules', async () => {
+  const get = (p) => fetch(`http://localhost:${TEST_PORT}${p}`);
+  const page = await get('/student/quiz');
+  const html = await page.text();
+  assert.match(html, /src="\/assets\/quiz-reveal-v2\/index-BOtlBGmE\.js"/);
+  assert.match(page.headers.get('cache-control'), /no-cache|max-age=0/);
+  for (const name of ['index-BOtlBGmE.js', 'api-DvVeKkjb.js', 'vendor-react-CeZ512P1.js', 'StudentQuiz-D7rIh7I4.js', 'index-CjDZATa7.css']) {
+    const original = await get(`/assets/${name}`);
+    const versioned = await get(`/assets/quiz-reveal-v2/${name}`);
+    assert.equal(versioned.status, 200, name);
+    assert.equal(await versioned.text(), await original.text(), `${name} serves the same asset under the fresh URL`);
+    if (name.startsWith('StudentQuiz-')) assert.equal(versioned.headers.get('cache-control'), 'no-cache');
+  }
 });

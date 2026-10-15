@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
-import { authenticate, requireRoles } from '../middleware/auth.js';
+import { authenticate, requireRoles, revokeUserSessions } from '../middleware/auth.js';
+import { validateName, validatePassword, send400 } from '../middleware/validate.js';
 
 const router = Router();
 
@@ -241,6 +242,9 @@ async function updateRoleHandler(req, res, next) {
       return res.status(404).json({ error: { code: 'USER_NOT_FOUND', message: 'User not found.' } });
     }
 
+    // F-18: a privilege change must not leave tokens carrying the previous authorisation alive.
+    await revokeUserSessions(req.params.id);
+
     res.json(publicUser(result.rows[0]));
   } catch (err) {
     next(err);
@@ -250,13 +254,52 @@ router.put('/:id/role', authenticate, requireRoles('admin'), updateRoleHandler);
 router.patch('/:id/role', authenticate, requireRoles('admin'), updateRoleHandler);
 
 // PUT /:id/profile and PATCH /:id/profile
+// F-18: only whitelisted fields are writable, a self-service password change must prove the
+// current password, and any password or role change revokes the account's live sessions.
+const AVATAR_RE = /^(https?:\/\/|data:image\/)/i;
+
+function validateAvatar(avatar) {
+  if (avatar === null) return null;
+  if (typeof avatar !== 'string' || avatar.length > 500) {
+    return { code: 'INVALID_AVATAR', message: 'Avatar must be a URL of at most 500 characters.' };
+  }
+  if (avatar && !AVATAR_RE.test(avatar)) {
+    return { code: 'INVALID_AVATAR', message: 'Avatar must be an http(s) or image data URL.' };
+  }
+  return null;
+}
+
 async function updateProfileHandler(req, res, next) {
   try {
     if (req.user.role !== 'admin' && String(req.user.id) !== String(req.params.id)) {
       return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Cannot update another user profile.' } });
     }
+    const isSelf = String(req.user.id) === String(req.params.id);
 
-    const { name, avatar, password } = req.body || {};
+    // `role`, `email`, `password_hash` and token watermarks are deliberately unread here:
+    // privileged fields change only through their own admin-gated routes.
+    const { name, avatar, password, currentPassword } = req.body || {};
+
+    if (name !== undefined) {
+      const nameErr = validateName(name);
+      if (nameErr) return send400(res, nameErr);
+    }
+    if (avatar !== undefined) {
+      const avatarErr = validateAvatar(avatar);
+      if (avatarErr) return send400(res, avatarErr);
+    }
+
+    const changingPassword = typeof password === 'string' && password.length > 0;
+    if (changingPassword) {
+      const pwErr = validatePassword(password);
+      if (pwErr) return send400(res, pwErr);
+      if (isSelf) {
+        if (typeof currentPassword !== 'string' || currentPassword.length === 0) {
+          return res.status(400).json({ error: { code: 'CURRENT_PASSWORD_REQUIRED', message: 'Your current password is required to set a new one.' } });
+        }
+      }
+    }
+
     const existing = await query('SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL', [req.params.id]);
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: { code: 'USER_NOT_FOUND', message: 'User not found.' } });
@@ -266,7 +309,14 @@ async function updateProfileHandler(req, res, next) {
     const newName = name !== undefined ? name.trim() : u.name;
     const newAvatar = avatar !== undefined ? avatar : u.avatar;
     let newHash = u.password_hash;
-    if (password && password.length >= 6) {
+
+    if (changingPassword) {
+      if (isSelf) {
+        const ok = await bcrypt.compare(currentPassword, u.password_hash);
+        if (!ok) {
+          return res.status(401).json({ error: { code: 'INVALID_CURRENT_PASSWORD', message: 'Current password is incorrect.' } });
+        }
+      }
       newHash = await bcrypt.hash(password, 12);
     }
 
@@ -278,7 +328,9 @@ async function updateProfileHandler(req, res, next) {
       [newName, newAvatar, newHash, req.params.id]
     );
 
-    res.json(publicUser(result.rows[0]));
+    if (changingPassword) await revokeUserSessions(req.params.id);
+
+    res.json({ ...publicUser(result.rows[0]), sessionsRevoked: changingPassword });
   } catch (err) {
     next(err);
   }
